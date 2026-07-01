@@ -1,0 +1,1016 @@
+---
+title: "quill-forge · Technical Reference"
+subtitle: "Complete Guide to Dataset Creation and EDA for Blueprint Annotation"
+author: "quill_forge v0.2.0"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float:
+      collapsed: false
+      smooth_scroll: true
+    toc_depth: 3
+    theme: flatly
+    highlight: kate
+    code_folding: show
+    number_sections: true
+  pdf_document:
+    toc: true
+    toc_depth: 3
+    number_sections: true
+    highlight: tango
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, eval = FALSE, message = FALSE, warning = FALSE)
+```
+
+---
+
+# Overview
+
+**quill-forge** (`quill_forge` v0.2.0) is a Python toolkit for building annotated computer vision datasets from architectural and MEP (Mechanical, Electrical, Plumbing) engineering blueprints stored in the **Feathers** platform. It fetches blueprint geometry from the API, renders PDF pages as images, and exports datasets in **COCO** or **YOLO** format — with or without class labels.
+
+**Core capabilities:**
+
+| Capability | Description |
+|:---|:---|
+| Data fetching | Pull request data, worksheets, geometries from Feathers API with caching |
+| Dataset building | High-level `DatasetBuilder` Python API and a `quill-forge` CLI |
+| Labeled datasets | Map layer names → category IDs via regex CSV |
+| **Unlabeled datasets** | Build without `class_label_mapping` — preserves original layer names |
+| Output formats | COCO JSON, YOLO txt |
+| Post-processing | Image patching, train/val splits, visualization |
+| Storage backends | Local filesystem, AWS S3, GCP |
+
+**Package location:**
+
+```
+/Users/shivam.roy/Desktop/Electrical/srcs/quill-forge/
+```
+
+---
+
+# Architecture
+
+## Directory Structure
+
+```
+quill-forge/
+├── quill_forge/                       # Main package (v0.2.0)
+│   ├── __init__.py                    # Public API exports — imports all public classes
+│   ├── __main__.py                    # CLI entry point
+│   ├── bpt/                           # Blueprint Processing Tool automation
+│   ├── cli/
+│   │   └── dataset_cli.py             # CLI: `quill-forge dataset <command>`
+│   ├── client/
+│   │   ├── api_client.py              # FeathersAPIClient — raw HTTP calls
+│   │   └── data_fetcher.py            # DataFetcher — high-level data retrieval ★
+│   ├── config/
+│   │   └── config_loader.py           # ConfigLoader — environment & API config
+│   ├── data/
+│   │   └── data_manager.py            # FeathersDataManager — hierarchical caching
+│   ├── dataset/
+│   │   ├── builder.py                 # DatasetBuilder — main high-level API ★
+│   │   ├── image_processor.py         # Image processing & PDF cropping
+│   │   ├── feature_filter.py          # Feature filtering & category mapping
+│   │   ├── registry.py                # Dataset registry for cloud storage ops
+│   │   ├── utils.py                   # Dataset utility functions
+│   │   └── exporters/
+│   │       ├── base_exporter.py       # Abstract base exporter
+│   │       ├── coco_exporter.py       # COCO JSON format exporter
+│   │       └── yolo_exporter.py       # YOLO txt format exporter
+│   ├── encord/                        # Encord platform integration
+│   ├── geometry/                      # Geometry processing utilities
+│   ├── storage/                       # Storage backends (local / GCP / AWS)
+│   └── utils/
+│       ├── worksheet_helper.py        # WorksheetHelper — worksheet inspection ★
+│       ├── request_helper.py          # RequestHelper + WorksheetRef
+│       ├── feature_parser.py          # FeatureParser — GeoJSON parsing
+│       ├── logger.py                  # Logging setup
+│       └── parallel.py               # Parallel execution utilities
+├── examples/                          # Six runnable examples
+│   ├── 01_fetch_data.py
+│   ├── 02_worksheet_operations.py
+│   ├── 03_copy_geometries.py
+│   ├── 04_duplicate_request.py
+│   ├── 05_bulk_fetch.py
+│   ├── 06_dataset_builder.py          # ★ Most relevant for dataset creation
+│   └── dataset_config.yaml            # Config template
+├── notebooks/
+│   ├── quill_forge_example.ipynb
+│   └── quill_forge_data_fetch_and_parse.ipynb
+├── docs/
+├── config.yaml                        # Main unified config
+├── setup.py
+├── README.md
+└── requirements.txt
+```
+
+> **★ Key files** for dataset creation and EDA: `dataset/builder.py`, `utils/worksheet_helper.py`, `client/data_fetcher.py`.
+
+## Key Class Map
+
+| Task | File | Key Class / Function |
+|:---|:---|:---|
+| Dataset building | `dataset/builder.py` | `DatasetBuilder.build()` |
+| Data fetching | `client/data_fetcher.py` | `DataFetcher.fetch_all_request_data()` |
+| Worksheet inspection | `utils/worksheet_helper.py` | `WorksheetHelper` |
+| Reference object | `utils/request_helper.py` | `WorksheetRef` |
+| Feature parsing | `utils/feature_parser.py` | `FeatureParser` |
+| COCO export | `dataset/exporters/coco_exporter.py` | `COCOExporter` |
+| YOLO export | `dataset/exporters/yolo_exporter.py` | `YOLOExporter` |
+| Feature filtering | `dataset/feature_filter.py` | `FeatureFilter` |
+| Config loading | `config/config_loader.py` | `ConfigLoader` |
+| Data caching | `data/data_manager.py` | `FeathersDataManager` |
+| CLI entry | `cli/dataset_cli.py` | `main()` |
+
+---
+
+# Configuration
+
+## Initializing ConfigLoader
+
+```{python}
+from quill_forge.config.config_loader import ConfigLoader
+
+# Valid environments: "feathers", "rexel", "feathers_stage", "rexel_stage"
+config = ConfigLoader(environment="feathers")
+```
+
+The `ConfigLoader` reads from `config.yaml` at the package root and merges environment variables.
+
+---
+
+# Creating Datasets Without Labels
+
+## What "Without Labels" Means
+
+When `class_label_mapping` is **omitted** from config, quill-forge:
+
+- Uses each feature's **original layer name** as the category name (e.g. `SUPPLY AIR DUCT_22"X12"`)
+- Does **not** remap or group categories
+- Exports all annotation geometry, preserving native layer names
+- Assigns `category_id` values sequentially from unique layer names encountered
+
+## Method 1: YAML Config (Recommended)
+
+Create a config file without the `class_label_mapping` field:
+
+```yaml
+# dataset_config_unlabeled.yaml
+
+versioning:
+  dataset_name: "hvac_unlabeled"
+  version: "1.0.0"
+  description: "Unlabeled HVAC blueprint dataset"
+  year: 2026
+
+trade: "hvac"
+request_ids: "path/to/request_ids.csv"
+request_id_column: "request_id"
+worksheet_id_column: "worksheet_id"
+
+use_cache: true
+task_type: "detection"
+format: "coco"          # or "yolo"
+bbox_format: "x1y1wh"  # xywh | x1y1wh | x1y1x2y2 | x1y1x2y2w
+
+zoom: 2.0
+grayscale: true
+
+feature_types:
+  - "Polygon"
+  - "LineString":
+      padding: 0.1
+      axis_aligned: false    # false = tilted bbox, true = axis-aligned
+      min_line_length: 4
+
+# class_label_mapping field is deliberately absent — this creates an unlabeled dataset
+```
+
+```{python}
+from quill_forge.dataset import DatasetBuilder
+
+builder = DatasetBuilder.from_config("dataset_config_unlabeled.yaml")
+result = builder.build()
+
+if result['success']:
+    print(f"Output:      {result['output_path']}")
+    stats = result['statistics']
+    print(f"Annotations: {stats['annotation_count']}")
+    print(f"Images:      {stats['image_count']}")
+    print(f"Categories:  {stats['category_count']}")  # = number of unique layer names
+else:
+    print(f"Failed: {result.get('error')}")
+```
+
+## Method 2: Python Dict
+
+```{python}
+from quill_forge.dataset import DatasetBuilder
+
+builder = DatasetBuilder(
+    dataset_name="hvac_unlabeled",
+    version="1.0.0",
+    config={
+        "format": "coco",
+        "request_ids": "request_ids.csv",
+        "trade": "hvac",
+        "feature_types": ["Polygon"],
+        "zoom": 2.0,
+        "grayscale": True,
+        # class_label_mapping is NOT provided
+    }
+)
+result = builder.build()
+```
+
+## Method 3: Fluent set_config() API
+
+```{python}
+from quill_forge.dataset import DatasetBuilder
+
+builder = DatasetBuilder("hvac_unlabeled", "1.0.0")
+builder.set_config(
+    request_ids="request_ids.csv",
+    trade="hvac",
+    feature_types=["Polygon"],
+    format="coco",
+    zoom=2.0
+    # class_label_mapping NOT passed
+)
+result = builder.build()
+```
+
+## DatasetBuilder.build() — Full Return Value
+
+```{python}
+result = {
+    "success": True,
+    "output_path": "datasets/hvac/1.0.0/coco",         # base output path
+    "final_output_path": "datasets/hvac/1.0.0/coco",   # after patching/split if enabled
+    "statistics": {
+        "annotation_count": 4523,
+        "image_count": 87,
+        "category_count": 14,   # unique layer names when no mapping provided
+    },
+    "patching": {               # only present if patching.enabled = true
+        "total_patches": 320,
+        "empty_patches_skipped": 45,
+    },
+    "split": {                  # only present if split.enabled = true
+        "train_images": 70,
+        "val_images": 17,
+    },
+    "visualization": {...},     # only present if visualization.enabled = true
+}
+```
+
+## Input CSV Format
+
+```csv
+request_id,worksheet_id
+0569b59f-38a1-4572-87f4-1e900e75030c,2e10ad3a-a8c4-4295-bf89-462837da1f91
+0569b59f-38a1-4572-87f4-1e900e75030c,5f42ab90-1234-5678-abcd-ef0123456789
+42584f75-0313-474f-91e1-ba0c40b79526,8d9e1f20-aaaa-bbbb-cccc-ddddeeeeeeee
+```
+
+## With Labels (Reference)
+
+When you DO want labeled categories, provide `class_label_mapping.csv`:
+
+```csv
+layer_name_regex,category_name,category_id
+.*DUCT.*,DUCT,0
+.*PIPE.*,PIPE,1
+ELBOW.*,ELBOW,2
+.*VALVE.*,VALVE,3
+```
+
+And reference it in config:
+
+```yaml
+class_label_mapping: "class_label_mapping.csv"
+```
+
+## With Patching and Train/Val Split
+
+```{python}
+builder = DatasetBuilder(
+    dataset_name="hvac_patched",
+    version="1.0.0",
+    config={
+        "format": "coco",
+        "request_ids": "request_ids.csv",
+        "trade": "hvac",
+        "feature_types": ["Polygon"],
+        "zoom": 2.0,
+        "patching": {
+            "enabled": True,
+            "patch_size": [640, 640],
+            "overlap": [0.2, 0.2],
+            "skip_empty_patches": True,
+            "empty_patch_keep_prob": 0,
+            "patch_annotation_coverage_threshold": 0.5,
+            "delete_original": True,
+        },
+        "split": {
+            "enabled": True,
+            "split_by": "pdf_id",   # or "request_id", "worksheet_id"
+            "train_ratio": 0.8,
+            "seed": 42,
+            "delete_original": True,
+        },
+        "visualization": {
+            "enabled": True,
+            "max_images": 20,
+            "draw_labels": True,
+        },
+    }
+)
+result = builder.build()
+
+# Final output: datasets/hvac/1.0.0/coco_patched_split/
+print(f"Final output:   {result['final_output_path']}")
+print(f"Total patches:  {result['patching']['total_patches']}")
+print(f"Train images:   {result['split']['train_images']}")
+print(f"Val images:     {result['split']['val_images']}")
+```
+
+---
+
+# Exploratory Data Analysis (EDA)
+
+## Initialization
+
+```{python}
+from quill_forge import DataFetcher, ConfigLoader, FeathersDataManager
+from quill_forge.utils.request_helper import RequestHelper, WorksheetRef
+from quill_forge.utils.worksheet_helper import WorksheetHelper
+
+config = ConfigLoader(environment="feathers")
+data_manager = FeathersDataManager(config=config)
+fetcher = DataFetcher(config, data_manager)
+request_helper = RequestHelper(data_manager)
+worksheet_helper = WorksheetHelper(data_manager, api_client=None, config=config)
+```
+
+## WorksheetRef — Core Reference Object
+
+`WorksheetRef` is the primary key passed to all worksheet helper methods:
+
+```{python}
+from quill_forge.utils.request_helper import WorksheetRef
+
+ref = WorksheetRef(
+    request_id="0569b59f-38a1-4572-87f4-1e900e75030c",
+    worksheet_id="2e10ad3a-a8c4-4295-bf89-462837da1f91"
+)
+```
+
+## DataFetcher — Fetching Data
+
+**File:** `quill_forge/client/data_fetcher.py`
+
+### fetch_all_request_data()
+
+```{python}
+result = fetcher.fetch_all_request_data(
+    request_id="0569b59f-38a1-4572-87f4-1e900e75030c",
+    use_cache=True,          # Use cached data if available; false = always re-fetch
+    fetch_geometries=True,   # Fetch per-worksheet geometry data
+    fetch_pdfs=True,         # Download PDF files locally
+    workers=0                # 0 = auto-parallel based on CPU count
+)
+
+summary = result["fetch_summary"]
+print(f"Successful: {summary['successful']}")
+# e.g. ['request_data', 'blueprint_files', 'tag_library', 'worksheet_geometries', 'pdfs']
+print(f"Failed: {summary['failed']}")
+```
+
+### Individual Fetch Methods
+
+```{python}
+# Request metadata
+request_data = fetcher.fetch_request_data(request_id, use_cache=True)
+
+# All PDF file references
+blueprint_files = fetcher.fetch_blueprint_files(request_id, use_cache=True)
+
+# Feature tag categories
+tag_library = fetcher.fetch_tag_library(request_id, use_cache=True)
+
+# All worksheets metadata
+worksheet_meta = fetcher.fetch_worksheet_metadata(request_id, use_cache=True)
+
+# Geometry for a specific worksheet
+geometries = fetcher.fetch_worksheet_geometries(
+    request_id,
+    worksheet_id,
+    use_cache=True,
+    include_geojson=True
+)
+```
+
+### Cached Data Directory Structure
+
+After fetching, data is organized as:
+
+```
+data/
+└── requests/
+    └── {request_id}/
+        ├── request_data.json              # Request metadata
+        ├── worksheets_metadata.json       # All worksheets in request
+        ├── blueprint_files.json           # PDF file references
+        ├── tag_library.json               # Feature tag/category definitions
+        ├── pdfs/
+        │   └── {pdf_name}.pdf
+        └── worksheet_geometries/
+            └── {worksheet_id}_geometries.json
+```
+
+## WorksheetHelper — Worksheet Inspection
+
+**File:** `quill_forge/utils/worksheet_helper.py`
+
+### Dimension and Scale Methods
+
+```{python}
+# Feathers coordinate system dimensions
+fe_width, fe_height = worksheet_helper.get_fe_width_height(ref)
+print(f"FE dimensions: {fe_width} × {fe_height}")
+
+# Scale metadata
+scale_info = worksheet_helper.get_scale(ref)
+# Returns: {'scale': 8.0, 'num_metric': 4, 'den_metric': 3}
+print(f"Scale: {scale_info['scale']} ({scale_info['num_metric']}:{scale_info['den_metric']})")
+
+# PDF-to-FE scale factors
+scale_x, scale_y = worksheet_helper.get_scale_factors(ref)
+# scale_x = pdf_width / fe_width
+# scale_y = pdf_height / fe_height
+```
+
+### PDF Reference Methods
+
+```{python}
+pdf_name = worksheet_helper.get_pdf_name(ref)    # e.g. "mechanical_plans.pdf"
+page_num = worksheet_helper.get_page_number(ref)  # 1-indexed
+pdf_path = worksheet_helper.get_pdf_path(ref)     # full filesystem path
+print(f"PDF: {pdf_name}, page {page_num}")
+```
+
+### Geometry Access Methods
+
+```{python}
+# Raw geometry data
+geometries = worksheet_helper.get_worksheet_geometries(ref)
+# Structure:
+# {
+#   'sheet_id': 'ws-123',
+#   'blueprint_file_id': 'bf-456',
+#   'outputs': [...]     # list of feature outputs
+# }
+
+outputs = geometries.get('outputs', [])
+print(f"Total feature outputs: {len(outputs)}")
+
+# Geometry type counts
+TYPE_NAMES = {1: 'Point', 2: 'LineString', 3: 'Polygon'}
+for type_id, type_name in TYPE_NAMES.items():
+    count = len([o for o in outputs
+                 if o.get('feature', {}).get('geometry_type') == type_id])
+    print(f"  {type_name}: {count}")
+
+# Parsed features — structured list of dicts
+all_features = worksheet_helper.get_parsed_features(ref)
+
+# Optional: filter by geometry type string
+polygon_features = worksheet_helper.get_parsed_features(ref, geometry_types=['Polygon'])
+line_features    = worksheet_helper.get_parsed_features(ref, geometry_types=['LineString'])
+```
+
+## Data Structures
+
+### Raw Output Object (from `geometries['outputs']`)
+
+```{python}
+output = {
+    'feature': {
+        'id': 'feat-abc-123',
+        'name': 'SUPPLY AIR DUCT_22"X12"',   # original layer name
+        'geometry_type': 2                     # 1=Point, 2=LineString, 3=Polygon
+    },
+    'output_geojson': {
+        'features': [
+            {
+                'geometry': {
+                    'type': 'LineString',
+                    'coordinates': [           # Feathers coordinate system (4th quadrant)
+                        [1234.5, -567.8],
+                        [1456.7, -789.0],
+                        # ...
+                    ]
+                }
+            }
+        ]
+    }
+}
+```
+
+### Parsed Feature Object (from `get_parsed_features()`)
+
+```{python}
+feature = {
+    'layer_name': 'SUPPLY AIR DUCT_22"X12"',
+    'feature_id': 'feat-abc-123',
+    'worksheet_id': 'ws-456',
+    'request_id': 'req-789',
+    'coordinates': {
+        'Polygon': [
+            [[x1, y1], [x2, y2], [x3, y3], ...]   # Feathers coordinates
+        ]
+    },
+    '_line_endpoints': None    # Populated for LineString features
+}
+```
+
+### Worksheet Metadata Object
+
+```{python}
+worksheet = {
+    'id': 'ws-123',
+    'name': 'Mechanical - Page 1',
+    'blueprint_file_id': 'bf-456',
+    'is_workable': True,
+    'scale': 8.0,
+    'num_metric': 4,
+    'den_metric': 3,
+    'image': {
+        'width': 3000,
+        'height': 2142
+    }
+}
+```
+
+## Complete EDA Workflow
+
+```{python}
+from quill_forge import DataFetcher, ConfigLoader, FeathersDataManager
+from quill_forge.utils.request_helper import RequestHelper, WorksheetRef
+from quill_forge.utils.worksheet_helper import WorksheetHelper
+from collections import Counter
+
+# ── Initialize ────────────────────────────────────────────────────────────
+config = ConfigLoader(environment="feathers")
+data_manager = FeathersDataManager(config=config)
+fetcher = DataFetcher(config, data_manager)
+worksheet_helper = WorksheetHelper(data_manager, api_client=None, config=config)
+
+REQUEST_ID   = "0569b59f-38a1-4572-87f4-1e900e75030c"
+WORKSHEET_ID = "2e10ad3a-a8c4-4295-bf89-462837da1f91"
+ref = WorksheetRef(REQUEST_ID, WORKSHEET_ID)
+
+# ── Step 1: Fetch all data ────────────────────────────────────────────────
+result = fetcher.fetch_all_request_data(
+    REQUEST_ID, use_cache=True, fetch_geometries=True, fetch_pdfs=True
+)
+print("Fetch summary:", result["fetch_summary"])
+
+# ── Step 2: Inspect worksheet ─────────────────────────────────────────────
+fe_width, fe_height = worksheet_helper.get_fe_width_height(ref)
+scale_info = worksheet_helper.get_scale(ref)
+pdf_name   = worksheet_helper.get_pdf_name(ref)
+page_num   = worksheet_helper.get_page_number(ref)
+
+print(f"\nWorksheet: {WORKSHEET_ID}")
+print(f"  FE size:  {fe_width} × {fe_height}")
+print(f"  Scale:    {scale_info['scale']} ({scale_info['num_metric']}:{scale_info['den_metric']})")
+print(f"  PDF:      {pdf_name}, page {page_num}")
+
+# ── Step 3: Geometry type counts ──────────────────────────────────────────
+geometries = worksheet_helper.get_worksheet_geometries(ref)
+outputs = geometries.get('outputs', [])
+
+type_counts = Counter(
+    o.get('feature', {}).get('geometry_type') for o in outputs
+)
+print(f"\nGeometry counts:")
+print(f"  Points:      {type_counts.get(1, 0)}")
+print(f"  LineStrings: {type_counts.get(2, 0)}")
+print(f"  Polygons:    {type_counts.get(3, 0)}")
+
+# ── Step 4: Layer distribution ────────────────────────────────────────────
+all_features = worksheet_helper.get_parsed_features(ref)
+layer_counter = Counter(f.get('layer_name') for f in all_features)
+
+print(f"\nUnique layers: {len(layer_counter)}")
+print("Top 10 layers by instance count:")
+for name, count in layer_counter.most_common(10):
+    print(f"  {count:4d}  {name}")
+
+# ── Step 5: Geometry detail per layer ─────────────────────────────────────
+for output in outputs[:5]:
+    feature  = output.get('feature', {})
+    geojson  = output.get('output_geojson', {})
+    instances = geojson.get('features', [])
+
+    print(f"\nLayer: {feature.get('name')}")
+    print(f"  Type: {feature.get('geometry_type')}  |  Instances: {len(instances)}")
+
+    if instances:
+        coords = instances[0].get('geometry', {}).get('coordinates', [])
+        if isinstance(coords[0], (int, float)):
+            print(f"  First coord: ({coords[0]:.2f}, {coords[1]:.2f})")
+        else:
+            print(f"  First vertex: ({coords[0][0]:.2f}, {coords[0][1]:.2f})")
+```
+
+## Visualization — Overlay Geometries on PDF
+
+```{python}
+import fitz      # pip install pymupdf
+import numpy as np
+from PIL import Image
+import cv2
+from matplotlib import pyplot as plt
+import io
+
+# ── Load PDF page ─────────────────────────────────────────────────────────
+pdf_path = worksheet_helper.get_pdf_path(ref)
+doc = fitz.open(pdf_path)
+page_num = worksheet_helper.get_page_number(ref)
+page = doc.load_page(page_num - 1)    # fitz is 0-indexed; Feathers is 1-indexed
+
+# ── Render to numpy array ─────────────────────────────────────────────────
+mat = fitz.Matrix(1, 1)               # zoom=1 for original resolution
+pix = page.get_pixmap(matrix=mat)
+img = Image.open(io.BytesIO(pix.tobytes("ppm")))
+img_array = np.array(img)
+
+# ── Compute coordinate transform ──────────────────────────────────────────
+fe_width, fe_height = worksheet_helper.get_fe_width_height(ref)
+pdf_width, pdf_height = pix.width, pix.height
+scale_x = pdf_width / fe_width
+scale_y = pdf_height / fe_height
+
+def fe_to_img(coords, sx, sy):
+    """Feathers 4th-quadrant coords → image pixel coords."""
+    if isinstance(coords[0], (int, float)):
+        return [coords[0] * sx, abs(coords[1]) * sy]
+    return [[c[0] * sx, abs(c[1]) * sy] for c in coords]
+
+# ── Draw geometries ───────────────────────────────────────────────────────
+img_draw = img_array.copy()
+geometries = worksheet_helper.get_worksheet_geometries(ref)
+
+COLORS = {
+    1: (0, 0, 255),    # Points:   red (OpenCV BGR)
+    2: (255, 0, 0),    # Lines:    blue (OpenCV BGR)
+    3: (0, 200, 0),    # Polygons: green (OpenCV BGR)
+}
+
+for output in geometries.get('outputs', []):
+    geom_type = output.get('feature', {}).get('geometry_type')
+    color = COLORS.get(geom_type, (128, 128, 128))
+
+    for feat in output.get('output_geojson', {}).get('features', []):
+        raw = feat.get('geometry', {}).get('coordinates', [])
+
+        if geom_type == 1:   # Point
+            px = fe_to_img(raw, scale_x, scale_y)
+            cv2.circle(img_draw, (int(px[0]), int(px[1])), 4, color, -1)
+
+        elif geom_type == 2:   # LineString
+            px = fe_to_img(raw, scale_x, scale_y)
+            pts = np.array([[int(p[0]), int(p[1])] for p in px], dtype=np.int32)
+            cv2.polylines(img_draw, [pts], False, color, 2)
+
+        elif geom_type == 3:   # Polygon
+            px = fe_to_img(raw, scale_x, scale_y)
+            pts = np.array([[int(p[0]), int(p[1])] for p in px], dtype=np.int32)
+            cv2.polylines(img_draw, [pts], True, color, 2)
+
+# ── Display ────────────────────────────────────────────────────────────────
+img_rgb = cv2.cvtColor(img_draw, cv2.COLOR_BGR2RGB)
+plt.figure(figsize=(16, 12))
+plt.imshow(img_rgb)
+plt.axis('off')
+plt.title(f"{pdf_name}  |  page {page_num}  |  {WORKSHEET_ID}")
+plt.tight_layout()
+plt.show()
+
+doc.close()
+```
+
+---
+
+# Coordinate System
+
+Feathers uses a **fourth-quadrant** coordinate system:
+
+```
+(0,0) ────────────────► x  (positive)
+  │
+  │   fe_width × |fe_height|
+  │
+  ▼
+ -y  (negative)
+```
+
+**Transformation to image pixel coordinates:**
+
+| Property | Formula |
+|:---|:---|
+| `scale_x` | `pdf_width / fe_width` |
+| `scale_y` | `pdf_height / fe_height` |
+| `pixel_x` | `feathers_x × scale_x` |
+| `pixel_y` | `abs(feathers_y) × scale_y` |
+
+`fe_width` and `fe_height` come from `worksheet_helper.get_fe_width_height(ref)`.
+
+**Helper methods that return scale factors directly:**
+
+```{python}
+# Returns (scale_x, scale_y) = (pdf_width / fe_width, pdf_height / fe_height)
+scale_x, scale_y = worksheet_helper.get_scale_factors(ref)
+```
+
+---
+
+# CLI Reference
+
+Entry point: `quill-forge dataset <command>`
+
+## create — Build Dataset from Config
+
+```bash
+quill-forge dataset create --config dataset_config.yaml
+```
+
+## patch — Split Images into Patches
+
+```bash
+quill-forge dataset patch \
+    --input  datasets/hvac/1.0.0/coco \
+    --output datasets/hvac/1.0.0/coco_patched \
+    --patch-size 640 640 \
+    --overlap 0.2 0.2 \
+    --skip-empty \
+    --seed 42 \
+    --grayscale
+```
+
+| Flag | Description |
+|:---|:---|
+| `--input` | Path to base COCO or YOLO dataset |
+| `--output` | Output directory for patched dataset |
+| `--patch-size W H` | Patch size in pixels |
+| `--overlap X Y` | Fractional overlap (0–1) in each axis |
+| `--skip-empty` | Skip patches with no annotations |
+| `--seed` | Random seed for reproducibility |
+| `--grayscale` | Convert to grayscale during patching |
+
+## split — Train/Val Split
+
+```bash
+quill-forge dataset split \
+    --input       datasets/hvac/1.0.0/coco \
+    --output      datasets/hvac/1.0.0/coco_split \
+    --split-by    pdf_id \
+    --train-ratio 0.8 \
+    --seed        42
+```
+
+`--split-by` options: `pdf_id` | `worksheet_id` | `request_id`
+
+## visualize — Render Annotated Images
+
+```bash
+quill-forge dataset visualize \
+    --input         datasets/hvac/1.0.0/coco \
+    --format        coco \
+    --max-images    20 \
+    --draw-labels \
+    --filter-classes duct pipe valve
+```
+
+## Registry Commands (Cloud Storage)
+
+```bash
+# Upload to S3/GCP
+quill-forge dataset upload \
+    --dataset-path  ./datasets/hvac/1.0.0/coco \
+    --manifest      ./manifest.json \
+    --storage-config dataset_config.yaml
+
+# Download from S3/GCP
+quill-forge dataset download \
+    --trade hvac --version 1.0.0 --format coco \
+    --output ./downloads \
+    --storage-config dataset_config.yaml
+
+# List available datasets
+quill-forge dataset list --storage-config dataset_config.yaml
+
+# Delete
+quill-forge dataset delete \
+    --trade hvac --version 1.0.0 --format coco \
+    --storage-config dataset_config.yaml
+```
+
+---
+
+# Output Formats
+
+## COCO Format
+
+**Output directory structure:**
+
+```
+datasets/{trade}/{version}/coco/
+├── annotations/
+│   └── annotations.json    # COCO-compatible JSON
+└── images/
+    ├── image_001.png
+    └── ...
+```
+
+**`annotations.json` structure:**
+
+```json
+{
+  "info": {},
+  "licenses": [],
+  "images": [
+    {
+      "id": 1,
+      "file_name": "image_001.png",
+      "width": 1920,
+      "height": 1440,
+      "worksheet_id": "ws-123",
+      "request_id": "req-456",
+      "pdf_id": "pdf-789"
+    }
+  ],
+  "annotations": [
+    {
+      "id": 1,
+      "image_id": 1,
+      "category_id": 0,
+      "bbox": [100, 100, 200, 150],
+      "area": 30000,
+      "iscrowd": 0,
+      "segmentation": [[x1, y1, x2, y2, "..."]]
+    }
+  ],
+  "categories": [
+    { "id": 0, "name": "DUCT", "supercategory": "equipment" }
+  ]
+}
+```
+
+**`bbox_format` options:**
+
+| Format | Values |
+|:---|:---|
+| `x1y1wh` | `[x_min, y_min, width, height]` — COCO default |
+| `xywh` | `[x_center, y_center, width, height]` |
+| `x1y1x2y2` | `[x_min, y_min, x_max, y_max]` |
+| `x1y1x2y2w` | `[x_min, y_min, x_max, y_max, width]` |
+
+## YOLO Format
+
+**Output directory structure:**
+
+```
+datasets/{trade}/{version}/yolo/
+├── images/
+│   ├── image_001.png
+│   └── ...
+├── labels/
+│   ├── image_001.txt          # one annotation per line
+│   └── ...
+├── classes.txt                # class names, one per line, ordered by ID
+├── image_metadata.csv         # worksheet_id, request_id, pdf_id per image
+└── category_statistics.csv    # per-class annotation count distribution
+```
+
+**Label file format** (all values normalized 0–1):
+
+```
+# <class_id> <x_center> <y_center> <width> <height>
+0 0.523 0.614 0.312 0.208
+1 0.211 0.345 0.094 0.156
+```
+
+---
+
+# Full Configuration Reference (YAML)
+
+```yaml
+# ── Versioning ──────────────────────────────────────────────────────────────
+versioning:
+  dataset_name: "my_dataset"
+  version: "1.0.0"
+  description: "Optional description"
+  year: 2026
+
+# ── Input ────────────────────────────────────────────────────────────────────
+trade: "hvac"                      # hvac | plumbing | electrical | …
+request_ids: "request_ids.csv"     # CSV with request_id + worksheet_id columns
+request_id_column: "request_id"
+worksheet_id_column: "worksheet_id"
+use_cache: true
+
+# ── Output ───────────────────────────────────────────────────────────────────
+task_type: "detection"
+output_dir: ""                     # empty → datasets/{trade}/{version}/{format}
+format: "coco"                     # coco | yolo
+bbox_format: "x1y1wh"             # xywh | x1y1wh | x1y1x2y2 | x1y1x2y2w
+
+# ── Image Processing ─────────────────────────────────────────────────────────
+zoom: 2.0                          # PDF render zoom factor (1.0 = original resolution)
+crop_roi: "ROI.*"                  # Regex to match ROI class name; null = disabled
+grayscale: true                    # Convert rendered images to grayscale
+
+# ── Features ─────────────────────────────────────────────────────────────────
+feature_types:
+  - "Polygon"
+  - "LineString":
+      padding: 0.1                 # Extra bbox padding as fraction of dims
+      axis_aligned: false          # false = tilted bbox; true = axis-aligned
+      min_line_length: 4           # Minimum LineString length (Feathers units)
+
+# ── Category Mapping (OMIT ENTIRELY for unlabeled dataset) ───────────────────
+# class_label_mapping: "class_label_mapping.csv"
+
+# ── Filters (optional) ───────────────────────────────────────────────────────
+filters:
+  categories_to_include: []        # empty = include all
+  categories_to_exclude: []        # empty = exclude none
+
+# ── Patching (optional) ──────────────────────────────────────────────────────
+patching:
+  enabled: false
+  patch_size: [640, 640]
+  overlap: [0.2, 0.2]
+  skip_empty_patches: true
+  empty_patch_keep_prob: 0
+  patch_annotation_coverage_threshold: 0.5
+  delete_original: true
+
+# ── Train/Val Split (optional) ───────────────────────────────────────────────
+split:
+  enabled: false
+  split_by: "pdf_id"               # pdf_id | request_id | worksheet_id
+  train_ratio: 0.8
+  seed: 42
+  delete_original: true
+
+# ── Visualization (optional) ─────────────────────────────────────────────────
+visualization:
+  enabled: false
+  max_images: 10
+  seed: 42
+  draw_labels: true
+  filter_classes: []               # empty = visualize all classes
+
+# ── Storage (for upload/download commands) ────────────────────────────────────
+storage:
+  type: "aws"                      # aws | gcp | local
+  aws:
+    bucket_name: "my-bucket"
+    prefix: "datasets/"
+    region_name: "eu-north-1"
+```
+
+---
+
+# Examples
+
+Runnable examples live at:
+
+```
+/Users/shivam.roy/Desktop/Electrical/srcs/quill-forge/examples/
+```
+
+| File | Purpose |
+|:---|:---|
+| `01_fetch_data.py` | Fetch complete request data including PDFs |
+| `02_worksheet_operations.py` | Inspect worksheet properties (scale, dimensions, PDF info) |
+| `03_copy_geometries.py` | Copy geometries between worksheets |
+| `04_duplicate_request.py` | End-to-end request duplication |
+| `05_bulk_fetch.py` | List and fetch all requests in bulk |
+| `06_dataset_builder.py` | **Build COCO/YOLO datasets from config** |
+
+Jupyter notebooks:
+
+```
+/Users/shivam.roy/Desktop/Electrical/srcs/quill-forge/notebooks/
+├── quill_forge_example.ipynb
+└── quill_forge_data_fetch_and_parse.ipynb
+```

@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Symbol Matcher</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <header>
+    <h1>Symbol Matcher</h1>
+    <p class="subtitle">Pick a request &amp; worksheet, drag a box around a symbol, and highlight every similar patch.</p>
+  </header>
+
+  <section class="controls">
+    <label>
+      Request (rid)
+      <select id="rid-select"><option value="">Loading…</option></select>
+    </label>
+    <label>
+      Worksheet (wid)
+      <input id="wid-input" list="wid-list" disabled autocomplete="off"
+             placeholder="select or search wid…" />
+      <datalist id="wid-list"></datalist>
+    </label>
+    <button id="load-btn" disabled>Load worksheet</button>
+
+    <div class="spacer"></div>
+
+    <label class="threshold">
+      Threshold <span id="thr-val">0.70</span>
+      <input id="thr-slider" type="range" min="0.30" max="0.98" step="0.01" value="0.70" />
+    </label>
+    <button id="select-btn" disabled>Select symbol</button>
+    <button id="sam-btn" disabled title="Segment symbols with FastSAM using the worksheet reference points">FastSAM boxes</button>
+    <button id="hqsam-btn" disabled title="Segment symbols with HQ-SAM (crisper on thin symbols, negative-prompted for dense areas)">HQ-SAM boxes</button>
+    <button id="sam2-btn" disabled title="Segment symbols with SAM 2.1 (Mac-friendly SAM-family model, runs on Apple MPS)">SAM2.1 boxes</button>
+    <label title="Glow pseudo-coloring preproc: feeds SAM a chromatic-gradient image so thin monochrome lines read like natural depth/lighting"><input type="checkbox" id="pc-toggle" disabled /> Pseudo-color</label>
+    <label title="Sharpen preproc: unsharp-masks the crop fed to SAM (a little aggressive) so razor-thin strokes pop"><input type="checkbox" id="sharpen-toggle" disabled /> Sharpen</label>
+    <button id="rematch-btn" disabled>Re-match</button>
+    <button id="clear-btn" disabled>Clear</button>
+
+    <div class="zoom-group" id="zoom-group" hidden>
+      <button id="zoom-out" title="Zoom out">&minus;</button>
+      <span id="zoom-val">100%</span>
+      <button id="zoom-in" title="Zoom in">+</button>
+      <button id="zoom-fit" title="Fit to view">Fit</button>
+      <button id="zoom-100" title="Actual size">1:1</button>
+    </div>
+  </section>
+
+  <p id="status" class="status"></p>
+
+  <div id="layers" class="layers" hidden>
+    <span class="layers-title">Layers:</span>
+    <label><input type="checkbox" data-layer="points" checked /><span class="swatch cross" style="color:#ff1744"></span>Points (GT) <span class="cnt" id="cnt-points">0</span></label>
+    <label><input type="checkbox" data-layer="patches" checked /><span class="swatch" style="background:#76ff03"></span>Patches (GT) <span class="cnt" id="cnt-patches">0</span></label>
+    <label><input type="checkbox" data-layer="matches" checked /><span class="swatch multi"></span>Matches <span class="cnt" id="cnt-matches">0</span></label>
+    <label><input type="checkbox" data-layer="fastsam" checked /><span class="swatch" style="background:#00e5ff"></span>FastSAM <span class="cnt" id="cnt-fastsam">0</span></label>
+    <label><input type="checkbox" data-layer="hqsam" checked /><span class="swatch" style="background:#ff3df0"></span>HQ-SAM <span class="cnt" id="cnt-hqsam">0</span></label>
+    <label><input type="checkbox" data-layer="sam2" checked /><span class="swatch" style="background:#ffb300"></span>SAM 2.1 <span class="cnt" id="cnt-sam2">0</span></label>
+  </div>
+
+  <section class="stage-wrap" id="stage-wrap">
+    <div id="stage" class="stage">
+      <img id="worksheet-img" alt="" />
+      <svg id="overlay" xmlns="http://www.w3.org/2000/svg"></svg>
+    </div>
+  </section>
+
+  <footer>
+    <span id="hint">Drag to pan &middot; scroll to zoom &middot; click <b>Select symbol</b> then drag a box. Repeat to add more symbols — each gets its own color. Use <b>Layers</b> to show/hide each model.</span>
+  </footer>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

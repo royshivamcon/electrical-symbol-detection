@@ -1,0 +1,19 @@
+fastapi>=0.110
+uvicorn[standard]>=0.27
+python-multipart>=0.0.9
+opencv-python-headless>=4.8
+numpy>=1.24
+pillow>=10.0
+requests>=2.31
+# SAM box-finding from reference points
+torch>=2.0
+torchvision>=0.15
+ultralytics>=8.4          # FastSAM (default SAM mode) + SAM 2.1 (model=sam2)
+segment-anything-hq>=0.3  # HQ-SAM / Light HQ-SAM (model=hqsam)
+timm>=0.9                 # MobileSAM (optional, model=mobilesam)
+mobile-sam @ git+https://github.com/ChaoningZhang/MobileSAM.git
+# Weights:
+#   models/FastSAM-s.pt         (ultralytics auto-downloads on first use)
+#   models/sam2.1_s.pt          (SAM 2.1 small, ultralytics auto-downloads on first use)
+#   models/sam_hq_vit_tiny.pth  (Light HQ-SAM, from huggingface.co/lkeab/hq-sam)
+#   models/mobile_sam.pt        (from the MobileSAM repo's weights/)

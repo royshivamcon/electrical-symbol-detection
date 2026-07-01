@@ -1,0 +1,813 @@
+[
+  {
+    "index": 1,
+    "bbox": [
+      8,
+      772,
+      660,
+      2082
+    ],
+    "rows": [
+      [
+        {
+          "bbox": [
+            8,
+            772,
+            660,
+            817
+          ],
+          "value": "LIGHTING SYMBOL LEGEND"
+        },
+        {
+          "bbox": [
+            8,
+            772,
+            660,
+            817
+          ],
+          "value": "LIGHTING SYMBOL LEGEND"
+        }
+      ],
+      [
+        {
+          "bbox": [
+            8,
+            817,
+            113,
+            850
+          ],
+          "value": null
+        },
+        {
+          "bbox": [
+            113,
+            817,
+            660,
+            850
+          ],
+          "value": "RECESSED DOWNLIGHT"
+        }
+      ],
+      [
+        {
+          "bbox": [
+            8,
+            850,
+            113,
+            882
+          ],
+          "value": null
+        },
+        {
+          "bbox": [
+            113,
+            850,
+            660,
+            882
+          ],
+          "value": "RECESSED DIRECTIONAL DOWNLIGHT"
+        }
+      ],
+      [
+        {
+          "bbox": [
+            8,
+            882,
+            113,
+            915
+          ],
+          "value": null
+        },
+        {
+          "bbox": [
+            113,
+            882,
+            660,
+            915
+          ],
+          "value": "SURFACE/SUSPENDED DOWNLIGHT"
+        }
+      ],
+      [
+        {
+          "bbox": [
+            8,
+            915,
+            113,
+            947
+          ],
+          "value": null
+        },
+        {
+          "bbox": [
+            113,
+            915,
+            660,
+            947
+          ],
+          "value": "SURFACE/SUSPENDED DIRECTIONAL DOWNLIGHT"
+        }
+      ],
+      [
+        {
+          "bbox": [
+            8,
+            947,
+            113,
+            979
+          ],
+          "value": null
+        },
+        {
+          "bbox": [
+            113,
+            947,
+            660,
+            979
+          ],
+          "value": "WALL MOUNTED LUMINAIRE"
+        }
+      ],
+      [
+        {
+          "bbox": [
+            8,
+            979,
+            113,
+            1012
+          ],
+          "value": null
+        },
+        {
+          "bbox": [
+            113,
+            979,
+            660,
+            1012
+          ],
+          "value": "RECESSED DOWNLIGHT - EMERG."
+        }
+      ],
+      [
+        {
+          "bbox": [
+            8,
+            1012,
+            113,
+            1044
+          ],
+          "value": null
+        },
+        {
+          "bbox": [
+            113,
+            1012,
+            660,
+            1044
+          ],
+          "value": "RECESSED DIRECTIONAL DOWNLIGHT - EMERG."
+        }
+      ],
+      [
+        {
+          "bbox": [
+            8,
+            1044,
+            113,
+            1077
+          ],
+          "value": null
+        },
+        {
+          "bbox": [
+            113,
+            1044,
+            660,
+            1077
+          ],
+          "value": "SURFACE/SUSPENDED DOWNLIGHT - EMERG."
+        }
+      ],
+      [
+        {
+          "bbox": [
+            8,
+            1077,
+            113,
+            1109
+          ],
+          "value": null
+        },
+        {
+          "bbox": [
+            113,
+            1077,
+            660,
+            1109
+          ],
+          "value": "SURFACE/SUSPENDED DIRECTIONAL DOWNLIGHT - EMERG."
+        }
+      ],
+      [
+        {
+          "bbox": [
+            8,
+            1109,
+            113,
+            1141
+          ],
+          "value": null
+        },
+        {
+          "bbox": [
+            113,
+            1109,
+            660,
+            1141
+          ],
+          "value": "WALL MOUNTED LUMINAIRE - EMERG."
+        }
+      ],
+      [
+        {
+          "bbox": [
+            8,
+            1141,
+            113,
+            1174
+          ],
+          "value": null
+        },
+        {
+          "bbox": [
+            113,
+            1141,
+            660,
+            1174
+          ],
+          "value": "RECESSED LUMINAIRE"
+        }
+      ],
+      [
+        {
+          "bbox": [
+            8,
+            1174,
+            113,
+            1206
+          ],
+          "value": null
+        },
+        {
+          "bbox": [
+            113,
+            1174,
+            660,
+            1206
+          ],
+          "value": "SURFACE/SUSPENDED LUMINAIRE"
+        }
+      ],
+      [
+        {
+          "bbox": [
+            8,
+            1206,
+            113,
+            1238
+          ],
+          "value": null
+        },
+        {
+          "bbox": [
+            113,
+            1206,
+            660,
+            1238
+          ],
+          "value": "WALL MOUNTED LUMINAIRE"
+        }
+      ],
+      [
+        {
+          "bbox": [
+            8,
+            1238,
+            113,
+            1271
+          ],
+          "value": null
+        },
+        {
+          "bbox": [
+            113,
+            1238,
+            660,
+            1271
+          ],
+          "value": "RECESSED LUMINAIRE - EMERG."
+        }
+      ],
+      [
+        {
+          "bbox": [
+            8,
+            1271,
+            113,
+            1303
+          ],
+          "value": null
+        },
+        {
+          "bbox": [
+            113,
+            1271,
+            660,
+            1303
+          ],
+          "value": "SURFACE/SUSPENDED LUMINAIRE - EMERG."
+        }
+      ],
+      [
+        {
+          "bbox": [
+            8,
+            1303,
+            113,
+            1335
+          ],
+          "value": null
+        },
+        {
+          "bbox": [
+            113,
+            1303,
+            660,
+            1335
+          ],
+          "value": "WALL MOUNTED LINEAR LUMINAIRE - EMERG."
+        }
+      ],
+      [
+        {
+          "bbox": [
+            8,
+            1335,
+            113,
+            1368
+          ],
+          "value": null
+        },
+        {
+          "bbox": [
+            113,
+            1335,
+            660,
+            1368
+          ],
+          "value": "TRACK LIGHTING COMPLETE WITH TRACK HEADS."
+        }
+      ],
+      [
+        {
+          "bbox": [
+            8,
+            1368,
+            113,
+            1400
+          ],
+          "value": null
+        },
+        {
+          "bbox": [
+            113,
+            1368,
+            660,
+            1400
+          ],
+          "value": "EXTERIOR POLE MOUNTED LUMINAIRE"
+        }
+      ],
+      [
+        {
+          "bbox": [
+            8,
+            1400,
+            113,
+            1433
+          ],
+          "value": null
+        },
+        {
+          "bbox": [
+            113,
+            1400,
+            660,
+            1433
+          ],
+          "value": "EXTERIOR BOLLARD LUMINAIRE"
+        }
+      ],
+      [
+        {
+          "bbox": [
+            8,
+            1433,
+            113,
+            1465
+          ],
+          "value": "001"
+        },
+        {
+          "bbox": [
+            113,
+            1433,
+            660,
+            1465
+          ],
+          "value": "LUMINAIRE/EMERGENCY LIGHTING/LIGHTING CONTROL TYPE TAG"
+        }
+      ],
+      [
+        {
+          "bbox": [
+            8,
+            1465,
+            113,
+            1497
+          ],
+          "value": null
+        },
+        {
+          "bbox": [
+            113,
+            1465,
+            660,
+            1497
+          ],
+          "value": "UNDERCABINET/MILLWORK LUMINAIRE"
+        }
+      ],
+      [
+        {
+          "bbox": [
+            8,
+            1497,
+            113,
+            1530
+          ],
+          "value": null
+        },
+        {
+          "bbox": [
+            113,
+            1497,
+            660,
+            1530
+          ],
+          "value": "STRIP/LINEAR LUMINAIRE"
+        }
+      ],
+      [
+        {
+          "bbox": [
+            8,
+            1530,
+            113,
+            1562
+          ],
+          "value": null
+        },
+        {
+          "bbox": [
+            113,
+            1530,
+            660,
+            1562
+          ],
+          "value": "CEILING MOUNTED EXIT SIGN WITH DIRECTION INDICATORS."
+        }
+      ],
+      [
+        {
+          "bbox": [
+            8,
+            1562,
+            113,
+            1595
+          ],
+          "value": null
+        },
+        {
+          "bbox": [
+            113,
+            1562,
+            660,
+            1595
+          ],
+          "value": "WALL MOUNTED EXIT SIGN WITH DIRECTION INDICATORS."
+        }
+      ],
+      [
+        {
+          "bbox": [
+            8,
+            1595,
+            113,
+            1627
+          ],
+          "value": null
+        },
+        {
+          "bbox": [
+            113,
+            1595,
+            660,
+            1627
+          ],
+          "value": "EMERGENCY LIGHTING BATTERY PACK"
+        }
+      ],
+      [
+        {
+          "bbox": [
+            8,
+            1627,
+            113,
+            1659
+          ],
+          "value": null
+        },
+        {
+          "bbox": [
+            113,
+            1627,
+            660,
+            1659
+          ],
+          "value": "EMERGENCY LIGHTING BATTERY PACK - HEADS"
+        }
+      ],
+      [
+        {
+          "bbox": [
+            8,
+            1659,
+            113,
+            1692
+          ],
+          "value": null
+        },
+        {
+          "bbox": [
+            113,
+            1659,
+            660,
+            1692
+          ],
+          "value": "EMERGENCY LIGHTING BATTERY PACK - HEADS & EXIT SIGN"
+        }
+      ],
+      [
+        {
+          "bbox": [
+            8,
+            1692,
+            113,
+            1724
+          ],
+          "value": null
+        },
+        {
+          "bbox": [
+            113,
+            1692,
+            660,
+            1724
+          ],
+          "value": "CEILING MOUNTED REMOTE HEAD - SINGULAR & DUAL"
+        }
+      ],
+      [
+        {
+          "bbox": [
+            8,
+            1724,
+            113,
+            1757
+          ],
+          "value": null
+        },
+        {
+          "bbox": [
+            113,
+            1724,
+            660,
+            1757
+          ],
+          "value": "WALL MOUNTED REMOTE HEAD - SINGULAR & DUAL"
+        }
+      ],
+      [
+        {
+          "bbox": [
+            8,
+            1757,
+            113,
+            1789
+          ],
+          "value": null
+        },
+        {
+          "bbox": [
+            113,
+            1757,
+            660,
+            1789
+          ],
+          "value": "SWITCH - SINGLE, TWO, THREE & FOUR GANG"
+        }
+      ],
+      [
+        {
+          "bbox": [
+            8,
+            1789,
+            113,
+            1821
+          ],
+          "value": null
+        },
+        {
+          "bbox": [
+            113,
+            1789,
+            660,
+            1821
+          ],
+          "value": "OCCUPANCY SENSOR SWITCH"
+        }
+      ],
+      [
+        {
+          "bbox": [
+            8,
+            1821,
+            113,
+            1854
+          ],
+          "value": null
+        },
+        {
+          "bbox": [
+            113,
+            1821,
+            660,
+            1854
+          ],
+          "value": "DIMMER SWITCH"
+        }
+      ],
+      [
+        {
+          "bbox": [
+            8,
+            1854,
+            113,
+            1886
+          ],
+          "value": null
+        },
+        {
+          "bbox": [
+            113,
+            1854,
+            660,
+            1886
+          ],
+          "value": "THREE WAY SWITCH"
+        }
+      ],
+      [
+        {
+          "bbox": [
+            8,
+            1886,
+            113,
+            1919
+          ],
+          "value": null
+        },
+        {
+          "bbox": [
+            113,
+            1886,
+            660,
+            1919
+          ],
+          "value": "SWITCH COMPLETE WITH PILOT LIGHT"
+        }
+      ],
+      [
+        {
+          "bbox": [
+            8,
+            1919,
+            113,
+            1951
+          ],
+          "value": null
+        },
+        {
+          "bbox": [
+            113,
+            1919,
+            660,
+            1951
+          ],
+          "value": "LOW VOLTAGE SWITCH"
+        }
+      ],
+      [
+        {
+          "bbox": [
+            8,
+            1951,
+            113,
+            1983
+          ],
+          "value": null
+        },
+        {
+          "bbox": [
+            113,
+            1951,
+            660,
+            1983
+          ],
+          "value": "CEILING MOUNTED OCCUPANCY SENSOR"
+        }
+      ],
+      [
+        {
+          "bbox": [
+            8,
+            1983,
+            113,
+            2016
+          ],
+          "value": null
+        },
+        {
+          "bbox": [
+            113,
+            1983,
+            660,
+            2016
+          ],
+          "value": "WALL MOUNTED OCCUPANCY SENSOR"
+        }
+      ],
+      [
+        {
+          "bbox": [
+            8,
+            2016,
+            113,
+            2048
+          ],
+          "value": null
+        },
+        {
+          "bbox": [
+            113,
+            2016,
+            660,
+            2048
+          ],
+          "value": "PHOTO ELECTRIC CELL"
+        }
+      ],
+      [
+        {
+          "bbox": [
+            8,
+            2048,
+            113,
+            2082
+          ],
+          "value": null
+        },
+        {
+          "bbox": [
+            113,
+            2048,
+            660,
+            2082
+          ],
+          "value": "DAYLIGHT HARVESTING LIGHT SENSOR"
+        }
+      ]
+    ]
+  }
+]

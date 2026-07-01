@@ -1,0 +1,46 @@
+# === Secrets / credentials (NEVER commit) ===
+.env
+.env.*
+config.yaml
+
+# === Python ===
+__pycache__/
+*.py[cod]
+*.egg-info/
+.ipynb_checkpoints/
+
+# === Virtual environments ===
+.envs/
+.venv/
+venv/
+
+# === Large data & run artifacts (kept out of VCS) ===
+data/
+outputs/
+logs/
+apt-handoff/
+
+# === Model weights ===
+models/
+*.pt
+*.pth
+*.onnx
+*.ckpt
+
+# === Third-party / nested git clones ===
+srcs/
+
+# === App caches & generated preview images ===
+symbol_matcher_app/.image_cache/
+symbol_matcher_app/pseudocolor_preview_*.png
+symbol_matcher_app/zoom_*.png
+
+# === EDA heavy artifacts ===
+eda/archive/
+# Notebooks that exceed GitHub's 100 MB per-file limit
+eda/notebooks/in_context_transformer.ipynb
+eda/notebooks/electrical_symbol_clustering.ipynb
+
+# === OS / editor ===
+.DS_Store
+.claude/
