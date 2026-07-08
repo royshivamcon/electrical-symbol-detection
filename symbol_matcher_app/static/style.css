@@ -20,9 +20,17 @@ body {
 
 header {
   padding: 16px 24px 4px;
+  position: relative; /* anchor the mode switcher top-right */
 }
 header h1 { margin: 0; font-size: 20px; }
 .subtitle { margin: 4px 0 0; color: var(--muted); font-size: 13px; }
+
+/* Page switcher (Detect boxes <-> Visual Quill) pinned to the header corner. */
+.mode-select { position: absolute; top: 14px; right: 24px; gap: 4px; }
+.mode-select select { min-width: 150px; }
+
+/* Generic muted inline text (e.g. dryrun summary). */
+.muted { color: var(--muted); font-size: 12px; }
 
 .controls {
   display: flex;

@@ -306,7 +306,7 @@ def main() -> None:
                 batch_tiles = chunk_tiles[b0:b0 + args.batch]
                 batch_crops = chunk_crops[b0:b0 + args.batch]
                 with torch.no_grad():
-                    batch_res = model(batch_crops, imgsz=args.imgsz, conf=args.conf,
+                    batch_res = model([sm._fastsam_rgb(c) for c in batch_crops], imgsz=args.imgsz, conf=args.conf,
                                       iou=args.iou, retina_masks=True, verbose=False)
 
                 for res, crop, tile_box in zip(batch_res, batch_crops, batch_tiles):

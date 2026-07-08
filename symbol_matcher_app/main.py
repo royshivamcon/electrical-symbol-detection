@@ -8,6 +8,7 @@ Then open http://127.0.0.1:8000/
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
@@ -19,7 +20,8 @@ import matcher
 import worksheet_loader as wl
 
 APP_DIR = Path(__file__).resolve().parent
-STATIC_DIR = APP_DIR / "static"    
+STATIC_DIR = APP_DIR / "static"
+DRYRUN_DIR = APP_DIR.parent / "srcs" / "symbol_det_steps_out"  # Electrical/srcs/...
 
 app = FastAPI(title="Symbol Matcher", version="1.0")
 
@@ -83,6 +85,81 @@ def api_meta(rid: str, wid: str) -> dict:
     return {"rid": rid, "wid": wid, "width": int(w), "height": int(h)}
 
 
+def _load_dryrun(name: str) -> dict:
+    """Read a ``*_bbox_dryrun.json`` from ``DRYRUN_DIR`` by basename only
+    (no path traversal; the name must be an actual dryrun file)."""
+    fname = Path(name).name
+    if not fname.endswith("_bbox_dryrun.json"):
+        raise HTTPException(status_code=400, detail="not a bbox dryrun file")
+    fp = DRYRUN_DIR / fname
+    if not fp.is_file():
+        raise HTTPException(status_code=404, detail=f"{fname} not found")
+    return json.loads(fp.read_text())
+
+
+@app.get("/api/quill/dryruns")
+def api_quill_dryruns() -> dict:
+    """List every bbox-dryrun JSON available under ``DRYRUN_DIR``."""
+    out = []
+    if DRYRUN_DIR.is_dir():
+        for fp in sorted(DRYRUN_DIR.glob("*_bbox_dryrun.json")):
+            try:
+                d = json.loads(fp.read_text())
+                out.append(
+                    {
+                        "file": fp.name,
+                        "wid": d.get("target_wid") or d.get("source_wid"),
+                        "n_boxes": d.get("n_boxes"),
+                        "n_layers": len(d.get("layers", [])),
+                    }
+                )
+            except Exception:
+                out.append({"file": fp.name, "wid": None, "n_boxes": None, "n_layers": None})
+    return {"dryruns": out}
+
+
+@app.get("/api/quill/dryrun")
+def api_quill_dryrun(file: str) -> dict:
+    """Parse one dryrun and return its per-layer quill styles + polygons already
+    transformed into raster pixels (y-up negative feature coords -> image px)."""
+    d = _load_dryrun(file)
+    rw, rh = d.get("raster_wh", [None, None])
+    fw, fh = d.get("target_fe_wh") or d.get("source_fe_wh") or [rw, rh]
+    sx = (rw / fw) if fw else 1.0
+    sy = (rh / fh) if fh else 1.0
+    styles = d.get("styles", {})
+    descs = d.get("descriptions", {})
+    layers = []
+    for L in d.get("layers", []):
+        name = L.get("name")
+        polys = []
+        for feat in (L.get("output_geojson") or {}).get("features", []):
+            geom = feat.get("geometry") or {}
+            if geom.get("type") != "Polygon":
+                continue
+            ring = (geom.get("coordinates") or [[]])[0]
+            if len(ring) > 1 and ring[0] == ring[-1]:
+                ring = ring[:-1]  # drop closing duplicate vertex
+            polys.append([[round(x * sx, 1), round(abs(y) * sy, 1)] for x, y in ring])
+        layers.append(
+            {
+                "name": name,
+                "description": descs.get(name, ""),
+                "style": styles.get(name, {}),
+                "polygons": polys,
+            }
+        )
+    layers.sort(key=lambda l: l["style"].get("layer_order", 0))  # honor draw order
+    return {
+        "rid": d.get("target_rid") or d.get("source_rid"),
+        "wid": d.get("target_wid") or d.get("source_wid"),
+        "raster_wh": [rw, rh],
+        "n_boxes": d.get("n_boxes"),
+        "n_points": d.get("n_points"),
+        "layers": layers,
+    }
+
+
 @app.get("/api/worksheet/{rid}/{wid}/ref_points")
 def api_ref_points(rid: str, wid: str) -> dict:
     """Ground-truth reference points (electrical Point features) for the sheet,
@@ -124,14 +201,40 @@ def api_ref_polygons(rid: str, wid: str, electrical: bool = True) -> dict:
     }
 
 
+def _wrap_proc_view_render(render_fn, proc_view: str):
+    """Wrap a tile ``render_fn`` so each crop uses a symbol_det processed view."""
+    if proc_view == "original":
+        return render_fn
+    import cv2
+    from finetune.mask_pipeline import _apply_proc_view
+
+    def fn(x0: int, y0: int, x1: int, y1: int):
+        crop = render_fn(x0, y0, x1, y1)
+        gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
+        return _apply_proc_view(gray, proc_view)
+
+    return fn
+
+
+def _apply_proc_view_image(img, proc_view: str):
+    """Apply a processing view to a full-sheet BGR image."""
+    if proc_view == "original":
+        return img
+    import cv2
+    from finetune.mask_pipeline import _apply_proc_view
+
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    return _apply_proc_view(gray, proc_view)
+
+
 def run_sam(
     img,
     points,
     model: str = "fastsam",
-    crop: int = 100,
+    crop: int = 200,
     min_symbol_px: int = 16,
-    max_symbol_px: int = 50,
-    pad: int = 0,
+    max_symbol_px: int = 200,
+    pad: int = 2,
     filt: str = "none",
     ksize: int = 5,
     kernels: tuple[int, int, int] = (6, 8, 3),
@@ -144,14 +247,15 @@ def run_sam(
     wid: str | None = None,
     zoom: float = 1.0,
     remove_text: bool = False,
+    proc_view: str = "original",
     postproc: bool = False,
+    hull: bool = False,
     workers: int = 0,
 ) -> list[dict]:
     """Run the selected model over ``points`` (unified per-point finder) and return
     box dicts.
 
-    ``model`` is ``"fastsam"``, ``"hqsam"`` or ``"mix"`` (runs both per point and
-    keeps the tighter box; HQ-SAM uses a larger ``pad``). Detection is always
+    ``model`` is ``"fastsam"``, ``"fastsamx"`` or ``"hqsam"``. HQ-SAM uses a larger ``pad``. Detection is always
     per-point; ``tile`` > 0 only chunks the sheet for bounded memory -- the per-point
     routine is identical inside each tile (no shared per-tile encode, no NMS).
     ``grow_on_clip`` (HQ-SAM) starts each crop at ``start_crop_frac`` of the adaptive
@@ -174,11 +278,13 @@ def run_sam(
     redacted out — line art / images kept — so labels and dimensions don't distract
     the detector. It forces the PDF-render path even at ``zoom == 1``.
     """
-    import boxes_from_points as bfp  # unified per-point finder (fastsam/hqsam/mix)
+    import boxes_from_points as bfp  # unified per-point finder (fastsam/fastsamx/hqsam)
 
+    if proc_view not in ("original", "binary", "suppressed"):
+        raise ValueError("proc_view must be original|binary|suppressed")
     if not points:
         return []
-    if rid and wid and ((zoom and zoom > 1.0) or remove_text):
+    if rid and wid and ((zoom and zoom > 1.0) or remove_text or proc_view != "original"):
         from sam_boxes import RefPoint
 
         Z = float(zoom) if zoom and zoom > 1.0 else 1.0
@@ -197,35 +303,185 @@ def run_sam(
             model=model, crop=zcrop, min_symbol_px=zmin, max_symbol_px=zmax,
             pad=pad, filt=filt, ksize=ksize, kernels=kernels, tile=tile,
             grow_on_clip=grow_on_clip, start_crop_frac=start_crop_frac, imgsz=imgsz,
-            postproc=postproc, workers=workers,
+            postproc=postproc, hull=hull, workers=workers,
         )
         if tile and tile > 0:
             # Memory-bounded: render one tile at a time instead of the whole
             # base*zoom sheet; the per-point routine is identical inside each tile.
             with wl.pdf_tile_renderer(rid, wid, Z, remove_text=remove_text) as (tw, th, render_fn):
+                render_fn = _wrap_proc_view_render(render_fn, proc_view)
                 boxes = [
                     b.as_dict()
                     for b in bfp.boxes_from_points(
                         None, zpts, tile_provider=render_fn, image_shape=(th, tw), **common)
                 ]
         else:
-            zimg = wl.render_pdf_image(rid, wid, Z, remove_text=remove_text)
+            zimg = _apply_proc_view_image(
+                wl.render_pdf_image(rid, wid, Z, remove_text=remove_text), proc_view)
             boxes = [b.as_dict() for b in bfp.boxes_from_points(zimg, zpts, **common)]
         inv = 1.0 / Z
         for b in boxes:  # map boxes back to the base raster
             b["x"], b["y"] = int(round(b["x"] * inv)), int(round(b["y"] * inv))
             b["w"], b["h"] = int(round(b["w"] * inv)), int(round(b["h"] * inv))
+            if b.get("hull"):
+                b["hull"] = [[int(round(px * inv)), int(round(py * inv))]
+                             for px, py in b["hull"]]
         return boxes
+    det_img = _apply_proc_view_image(img, proc_view)
     return [
         b.as_dict()
         for b in bfp.boxes_from_points(
-            img, points, model=model, crop=crop, min_symbol_px=min_symbol_px,
+            det_img, points, model=model, crop=crop, min_symbol_px=min_symbol_px,
             max_symbol_px=max_symbol_px, pad=pad, filt=filt, ksize=ksize,
             kernels=kernels, tile=tile, grow_on_clip=grow_on_clip,
             start_crop_frac=start_crop_frac, imgsz=imgsz, postproc=postproc,
-            workers=workers,
+            hull=hull, workers=workers,
         )
     ]
+
+
+def _scale_sam_boxes_to_base(boxes, Z: float) -> None:
+    """Map ``SamBox`` coords (and optional masks) from rendered space to base raster."""
+    if Z == 1.0:
+        return
+    import cv2
+
+    inv = 1.0 / Z
+    for b in boxes:
+        b.x, b.y = int(round(b.x * inv)), int(round(b.y * inv))
+        b.w, b.h = int(round(b.w * inv)), int(round(b.h * inv))
+        if b.hull:
+            b.hull = [[int(round(px * inv)), int(round(py * inv))] for px, py in b.hull]
+        if b.mask is not None:
+            b.mx, b.my = int(round(b.mx * inv)), int(round(b.my * inv))
+            nh = max(1, int(round(b.mask.shape[0] * inv)))
+            nw = max(1, int(round(b.mask.shape[1] * inv)))
+            b.mask = cv2.resize(
+                b.mask.astype("uint8"), (nw, nh), interpolation=cv2.INTER_NEAREST,
+            ).astype(bool)
+
+
+def run_sam_boxes(
+    img,
+    points,
+    model: str = "fastsam",
+    crop: int = 200,
+    min_symbol_px: int = 16,
+    max_symbol_px: int = 200,
+    pad: int = 2,
+    filt: str = "none",
+    ksize: int = 5,
+    kernels: tuple[int, int, int] = (6, 8, 3),
+    tile: int = 0,
+    nms_iou: float = 0.5,
+    grow_on_clip: bool = False,
+    start_crop_frac: float = 0.3,
+    imgsz: int = 1024,
+    rid: str | None = None,
+    wid: str | None = None,
+    zoom: float = 1.0,
+    remove_text: bool = False,
+    proc_view: str = "original",
+    postproc: bool = False,
+    hull: bool = False,
+    workers: int = 0,
+) -> list:
+    """Like ``run_sam`` but returns ``SamBox`` objects with ``.mask`` populated."""
+    import boxes_from_points as bfp
+
+    if proc_view not in ("original", "binary", "suppressed"):
+        raise ValueError("proc_view must be original|binary|suppressed")
+    if not points:
+        return []
+    if rid and wid and ((zoom and zoom > 1.0) or remove_text or proc_view != "original"):
+        from sam_boxes import RefPoint
+
+        Z = float(zoom) if zoom and zoom > 1.0 else 1.0
+        zpts = [RefPoint(int(round(p.x * Z)), int(round(p.y * Z)), p.name) for p in points]
+        zcrop = max(1, int(round(crop * Z)))
+        zmax = max(1, int(round(max_symbol_px * Z)))
+        zmin = max(1, int(round(min_symbol_px * Z)))
+        common = dict(
+            model=model, crop=zcrop, min_symbol_px=zmin, max_symbol_px=zmax,
+            pad=pad, filt=filt, ksize=ksize, kernels=kernels, tile=tile,
+            grow_on_clip=grow_on_clip, start_crop_frac=start_crop_frac, imgsz=imgsz,
+            collect_masks=True, postproc=postproc, hull=hull, workers=workers,
+        )
+        if tile and tile > 0:
+            with wl.pdf_tile_renderer(rid, wid, Z, remove_text=remove_text) as (tw, th, render_fn):
+                render_fn = _wrap_proc_view_render(render_fn, proc_view)
+                boxes = bfp.boxes_from_points(
+                    None, zpts, tile_provider=render_fn, image_shape=(th, tw), **common)
+        else:
+            zimg = _apply_proc_view_image(
+                wl.render_pdf_image(rid, wid, Z, remove_text=remove_text), proc_view)
+            boxes = bfp.boxes_from_points(zimg, zpts, **common)
+        _scale_sam_boxes_to_base(boxes, Z)
+        return boxes
+    det_img = _apply_proc_view_image(img, proc_view)
+    return bfp.boxes_from_points(
+        det_img, points, model=model, crop=crop, min_symbol_px=min_symbol_px,
+        max_symbol_px=max_symbol_px, pad=pad, filt=filt, ksize=ksize,
+        kernels=kernels, tile=tile, grow_on_clip=grow_on_clip,
+        start_crop_frac=start_crop_frac, imgsz=imgsz, collect_masks=True,
+        postproc=postproc, hull=hull, workers=workers,
+    )
+
+
+def sam_masks_key_raw(
+    rid: str, wid: str, limit: int, model: str, crop: int, min_symbol_px: int,
+    max_symbol_px: int, pad: int, filt: str, ksize: int, kr: int, kg: int, kb: int,
+    tile: int, nms_iou: float, zoom: float, remove_text: bool, proc_view: str,
+    postproc: bool, workers: int,
+) -> str:
+    return (
+        f"{rid}|{wid}|{limit}|{model}|{crop}|{min_symbol_px}|{max_symbol_px}|{pad}|"
+        f"{filt}|{ksize}|{kr}|{kg}|{kb}|{tile}|{nms_iou}|{zoom}|{int(bool(remove_text))}|"
+        f"{proc_view}|{int(bool(postproc))}|{workers}"
+    )
+
+
+def sam_masks_cache_path(key_raw: str):
+    import hashlib
+
+    key = "masks__" + hashlib.sha1(key_raw.encode()).hexdigest()[:20] + ".png"
+    return wl.CACHE_DIR / key
+
+
+def _composite_point_masks(boxes, base_w: int, base_h: int):
+    """Composite per-point SAM masks onto a transparent BGRA canvas at base resolution."""
+    import mask_colors as mc
+    import numpy as np
+
+    canvas = np.zeros((base_h, base_w, 4), dtype=np.uint8)
+    for i, b in enumerate(boxes):
+        m = getattr(b, "mask", None)
+        if m is None:
+            continue
+        mx, my = int(b.mx), int(b.my)
+        mh, mw = m.shape
+        x0, y0 = max(0, mx), max(0, my)
+        x1, y1 = min(base_w, mx + mw), min(base_h, my + mh)
+        if x1 <= x0 or y1 <= y0:
+            continue
+        sub = m[y0 - my:y1 - my, x0 - mx:x1 - mx]
+        B, G, R, A = mc.mask_color_bgra(i)
+        region = canvas[y0:y1, x0:x1]
+        region[sub, 0] = B
+        region[sub, 1] = G
+        region[sub, 2] = R
+        region[sub, 3] = A
+    return canvas
+
+
+def _write_mask_png(canvas, cache_path) -> bytes:
+    import cv2
+
+    ok, buf = cv2.imencode(".png", canvas)
+    if not ok:
+        raise RuntimeError("mask overlay encode failed")
+    cache_path.write_bytes(buf.tobytes())
+    return buf.tobytes()
 
 
 @app.get("/api/worksheet/{rid}/{wid}/sam_points")
@@ -234,9 +490,9 @@ def api_sam_points(
     wid: str,
     limit: int = 0,
     model: str = "fastsam",
-    crop: int = 90,
+    crop: int = 120,
     min_symbol_px: int = 16,
-    max_symbol_px: int = 50,
+    max_symbol_px: int = 120,
     pad: int = 3,
     filt: str = "none",
     ksize: int = 5,
@@ -248,13 +504,16 @@ def api_sam_points(
     imgsz: int = 1024,
     zoom: float = 4.0,
     remove_text: bool = True,
+    proc_view: str = "original",
     postproc: bool = True,
+    hull: bool = False,
     workers: int = 0,
+    masks: bool = False,
 ) -> dict:
     """Segment symbols around the worksheet's reference points (electrical Point
     features) and return their bounding boxes.
 
-    ``model`` selects "fastsam" (default, tighter boxes), "hqsam" or "mix".
+    ``model`` selects "fastsam" (default), "fastsamx" or "hqsam".
     ``crop`` is the half-window around each point; ``min_symbol_px`` /
     ``max_symbol_px`` floor and cap box size, and ``pad`` adds a margin.
     ``filt`` picks a preprocessing filter fed to the SAM model: ``"gaussian"`` /
@@ -278,14 +537,29 @@ def api_sam_points(
         return {"count": 0, "boxes": [], "points": [], "total_points": 0, "model": model}
     used = points[:limit] if limit and limit > 0 else points
 
+    sam_kwargs = dict(
+        model=model, crop=crop, min_symbol_px=min_symbol_px, max_symbol_px=max_symbol_px,
+        pad=pad, filt=filt, ksize=ksize, kernels=(kr, kg, kb), tile=tile,
+        nms_iou=nms_iou, imgsz=imgsz, rid=rid, wid=wid, zoom=zoom,
+        remove_text=remove_text, proc_view=proc_view, postproc=postproc,
+        hull=hull, workers=workers,
+    )
     try:
-        boxes = run_sam(
-            img, used, model=model, crop=crop, min_symbol_px=min_symbol_px,
-            max_symbol_px=max_symbol_px, pad=pad, filt=filt, ksize=ksize,
-            kernels=(kr, kg, kb), tile=tile, nms_iou=nms_iou, imgsz=imgsz,
-            rid=rid, wid=wid, zoom=zoom, remove_text=remove_text, postproc=postproc,
-            workers=workers,
-        )
+        if masks:
+            sam_boxes = run_sam_boxes(img, used, **sam_kwargs)
+            boxes = [b.as_dict() for b in sam_boxes]
+            key_raw = sam_masks_key_raw(
+                rid, wid, limit, model, crop, min_symbol_px, max_symbol_px, pad,
+                filt, ksize, kr, kg, kb, tile, nms_iou, zoom, remove_text,
+                proc_view, postproc, workers,
+            )
+            cache_path = sam_masks_cache_path(key_raw)
+            canvas = _composite_point_masks(sam_boxes, W, H)
+            _write_mask_png(canvas, cache_path)
+            import progress as pg
+            pg.get_logger().info("sam_masks: wrote cache %s (%d masks)", cache_path.name, len(sam_boxes))
+        else:
+            boxes = run_sam(img, used, **sam_kwargs)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=503, detail=str(exc))
     except Exception as exc:
@@ -362,41 +636,26 @@ def api_processed(
     return Response(content=buf.tobytes(), media_type="image/png")
 
 
-def _boxes_with_masks(
-    img, points, model, crop, min_symbol_px, max_symbol_px, pad, filt, ksize,
-    kernels, tile, nms_iou, postproc, imgsz=1024, workers=0,
-) -> list:
-    """Run the unified finder with ``collect_masks=True`` and return SamBox objects
-    (with ``.mask``/``.mx``/``.my``). Only hqsam/fastsam/mix carry masks."""
-    import boxes_from_points as bfp
-
-    return bfp.boxes_from_points(
-        img, points, model=model, crop=crop, min_symbol_px=min_symbol_px,
-        max_symbol_px=max_symbol_px, pad=pad, filt=filt, ksize=ksize,
-        kernels=kernels, tile=tile, imgsz=imgsz, collect_masks=True, postproc=postproc,
-        workers=workers,
-    )
-
-
 @app.get("/api/worksheet/{rid}/{wid}/sam_masks")
 def api_sam_masks(
     rid: str,
     wid: str,
     limit: int = 0,
     model: str = "fastsam",
-    crop: int = 150,
+    crop: int = 120,
     min_symbol_px: int = 16,
-    max_symbol_px: int = 50,
-    pad: int = 0,
+    max_symbol_px: int = 120,
+    pad: int = 3,
     filt: str = "none",
     ksize: int = 5,
     kr: int = 6,
     kg: int = 8,
     kb: int = 3,
-    tile: int = 0,
+    tile: int = 1024,
     nms_iou: float = 0.5,
     zoom: float = 4.0,
     remove_text: bool = True,
+    proc_view: str = "original",
     postproc: bool = True,
     workers: int = 0,
 ) -> Response:
@@ -405,81 +664,187 @@ def api_sam_masks(
     Runs the point-prompted finder with ``collect_masks=True`` (and ``postproc`` on
     by default so the strokes are the symbol_det-filtered ink), then composites each
     per-point mask onto a transparent canvas at base-raster resolution. Only
-    hqsam/fastsam/mix carry masks; other models return an empty overlay. Cached
+    hqsam/fastsam/fastsamx carry masks; other models return an empty overlay. Cached
     per query on disk."""
-    import hashlib
+    import progress as pg
 
-    import cv2 as _cv2
-    import numpy as _np
-    import sam_boxes as sb
+    if proc_view not in ("original", "binary", "suppressed"):
+        raise HTTPException(status_code=400, detail="proc_view must be original|binary|suppressed")
 
-    key_raw = (
-        f"{rid}|{wid}|{limit}|{model}|{crop}|{min_symbol_px}|{max_symbol_px}|{pad}|"
-        f"{filt}|{ksize}|{kr}|{kg}|{kb}|{tile}|{nms_iou}|{zoom}|{int(bool(remove_text))}|"
-        f"{int(bool(postproc))}"
+    key_raw = sam_masks_key_raw(
+        rid, wid, limit, model, crop, min_symbol_px, max_symbol_px, pad,
+        filt, ksize, kr, kg, kb, tile, nms_iou, zoom, remove_text,
+        proc_view, postproc, workers,
     )
-    key = "masks__" + hashlib.sha1(key_raw.encode()).hexdigest()[:20] + ".png"
-    cache_path = wl.CACHE_DIR / key
+    cache_path = sam_masks_cache_path(key_raw)
     if cache_path.exists():
+        pg.get_logger().info("sam_masks: cache hit %s", cache_path.name)
         return Response(content=cache_path.read_bytes(), media_type="image/png")
 
+    pg.get_logger().info("sam_masks: cache miss — running %s on %s/%s", model, rid[:8], wid[:8])
     try:
         img = wl.load_worksheet_image(rid, wid)
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"Failed to load image: {exc}")
+
+    import sam_boxes as sb
+
     H, W = img.shape[:2]
     points = sb.load_reference_points(rid, wid, W, H)
     used = points[:limit] if limit and limit > 0 else points
 
-    Z = float(zoom) if zoom and zoom > 1.0 else 1.0
-    if used and ((Z > 1.0) or remove_text):
-        from sam_boxes import RefPoint
-
-        det_img = wl.render_pdf_image(rid, wid, Z, remove_text=remove_text)
-        det_pts = [RefPoint(int(round(p.x * Z)), int(round(p.y * Z)), p.name) for p in used]
-        sc, sms, sp = int(round(crop * Z)), int(round(min_symbol_px * Z)), int(round(max_symbol_px * Z))
-        spad, stile = int(round(pad * Z)), (int(round(tile * Z)) if tile else tile)
-    else:
-        det_img, det_pts = img, used
-        sc, sms, sp, spad, stile, Z = crop, min_symbol_px, max_symbol_px, pad, tile, 1.0
-
     try:
-        boxes = _boxes_with_masks(
-            det_img, det_pts, model, sc, sms, sp, spad, filt, ksize,
-            (kr, kg, kb), stile, nms_iou, postproc, workers=workers,
-        ) if det_pts else []
+        boxes = run_sam_boxes(
+            img, used, model=model, crop=crop, min_symbol_px=min_symbol_px,
+            max_symbol_px=max_symbol_px, pad=pad, filt=filt, ksize=ksize,
+            kernels=(kr, kg, kb), tile=tile, nms_iou=nms_iou,
+            rid=rid, wid=wid, zoom=zoom, remove_text=remove_text,
+            proc_view=proc_view, postproc=postproc, workers=workers,
+        ) if used else []
     except FileNotFoundError as exc:
         raise HTTPException(status_code=503, detail=str(exc))
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"SAM mask run failed: {exc}")
 
-    canvas = _np.zeros((H, W, 4), dtype=_np.uint8)  # BGRA, transparent
-    B, G, R, A = 255, 0, 255, 170  # magenta, semi-transparent
-    inv = 1.0 / Z
-    for b in boxes:
-        m = getattr(b, "mask", None)
-        if m is None:
-            continue
-        mx, my = int(round(b.mx * inv)), int(round(b.my * inv))
-        if Z != 1.0:
-            nh, nw = max(1, int(round(m.shape[0] * inv))), max(1, int(round(m.shape[1] * inv)))
-            m = _cv2.resize(m.astype("uint8"), (nw, nh), interpolation=_cv2.INTER_NEAREST).astype(bool)
-        mh, mw = m.shape
-        x0, y0 = max(0, mx), max(0, my)
-        x1, y1 = min(W, mx + mw), min(H, my + mh)
-        if x1 <= x0 or y1 <= y0:
-            continue
-        sub = m[y0 - my:y1 - my, x0 - mx:x1 - mx]
-        region = canvas[y0:y1, x0:x1]
-        region[sub, 0] = B
-        region[sub, 1] = G
-        region[sub, 2] = R
-        region[sub, 3] = A
+    canvas = _composite_point_masks(boxes, W, H)
+    try:
+        png = _write_mask_png(canvas, cache_path)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+    return Response(content=png, media_type="image/png")
+
+
+def segmasks_hits_key_raw(
+    rid: str,
+    wid: str,
+    model: str,
+    filt: str,
+    ksize: int,
+    kr: int,
+    kg: int,
+    kb: int,
+    tile: int,
+    overlap: int,
+    imgsz: int,
+    conf: float,
+    iou: float,
+    min_px: int,
+    max_frac: float,
+    zoom: float,
+    remove_text: bool,
+    proc_view: str,
+    use_head: bool,
+    limit_tiles: int,
+) -> str:
+    return (
+        f"segmasks_hits|{rid}|{wid}|{model}|{filt}|{ksize}|{kr}|{kg}|{kb}|{tile}|{overlap}|"
+        f"{imgsz}|{conf}|{iou}|{min_px}|{max_frac}|{zoom}|"
+        f"{int(bool(remove_text))}|{proc_view}|{int(bool(use_head))}|{limit_tiles}"
+    )
+
+
+def segmasks_hits_cache_path(key_raw: str):
+    import hashlib
+
+    key = "segmasks_hits__" + hashlib.sha1(key_raw.encode()).hexdigest()[:20] + ".npz"
+    return wl.CACHE_DIR / key
+
+
+@app.get("/api/worksheet/{rid}/{wid}/segment_masks")
+def api_segment_masks(
+    rid: str,
+    wid: str,
+    model: str = "fastsam",
+    filt: str = "none",
+    ksize: int = 5,
+    kr: int = 6,
+    kg: int = 8,
+    kb: int = 3,
+    tile: int = 1024,
+    overlap: int = 128,
+    imgsz: int = 1024,
+    conf: float = 0.25,
+    iou: float = 0.9,
+    min_px: int = 12,
+    max_frac: float = 0.1,
+    min_score: float = 0.25,
+    zoom: float = 4.0,
+    remove_text: bool = True,
+    proc_view: str = "original",
+    use_head: bool = False,
+    limit_tiles: int = 0,
+) -> Response:
+    """Transparent full-sheet RGBA overlay of segment-everything FastSAM masks.
+
+    Runs the whole-sheet scan from ``finetune/mask_pipeline.py`` (cached as hits),
+    then filters and composites by ``min_score`` without re-running FastSAM when
+    hits are already on disk."""
+    import cv2 as _cv2
+
+    if model not in ("fastsam", "fastsamx"):
+        raise HTTPException(status_code=400, detail="model must be fastsam|fastsamx")
+    if proc_view not in ("original", "binary", "suppressed"):
+        raise HTTPException(status_code=400, detail="proc_view must be original|binary|suppressed")
+
+    from finetune.mask_pipeline import (
+        ScanCfg,
+        load_hits_cache,
+        render_rgba_overlay,
+        save_hits_cache,
+        scan_sheet,
+    )
+
+    hits_key = segmasks_hits_key_raw(
+        rid, wid, model, filt, ksize, kr, kg, kb, tile, overlap,
+        imgsz, conf, iou, min_px, max_frac, zoom, remove_text,
+        proc_view, use_head, limit_tiles,
+    )
+    hits_path = segmasks_hits_cache_path(hits_key)
+
+    import progress as pg
+
+    cfg = ScanCfg(
+        zoom=zoom,
+        remove_text=remove_text,
+        proc_view=proc_view,
+        tile=tile,
+        overlap=overlap,
+        imgsz=imgsz,
+        conf=conf,
+        iou=iou,
+        min_px=min_px,
+        max_frac=max_frac,
+        filt=filt,
+        ksize=ksize,
+        kernels=(kr, kg, kb),
+        use_head=use_head,
+    )
+    try:
+        if hits_path.exists():
+            pg.get_logger().info("segment_masks: hits cache hit %s (min_score=%.2f)", hits_path.name, min_score)
+            hits, rw, rh, base_w, base_h = load_hits_cache(hits_path)
+        else:
+            pg.get_logger().info(
+                "segment_masks: hits cache miss — scanning %s on %s/%s",
+                model, rid[:8], wid[:8],
+            )
+            hits, rw, rh, base_w, base_h = scan_sheet(
+                rid, wid, model, cfg, limit_tiles=limit_tiles,
+            )
+            save_hits_cache(hits, hits_path, rw, rh, base_w, base_h)
+            pg.get_logger().info("segment_masks: saved %d hits to %s", len(hits), hits_path.name)
+
+        canvas = render_rgba_overlay(
+            hits, base_w, base_h, rw, rh, min_score=min_score,
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Segment mask scan failed: {exc}")
 
     ok, buf = _cv2.imencode(".png", canvas)
     if not ok:
         raise HTTPException(status_code=500, detail="encode failed")
-    cache_path.write_bytes(buf.tobytes())
     return Response(content=buf.tobytes(), media_type="image/png")
 
 
@@ -492,9 +857,9 @@ def api_evaluate(
     gt: str = "bboxes",
     limit: int = 0,
     crop: int = 90,
-    min_symbol_px: int = 20,
-    max_symbol_px: int = 90,
-    pad: int = 0,
+    min_symbol_px: int = 16,
+    max_symbol_px: int = 50,
+    pad: int = 2,
     filt: str = "none",
     ksize: int = 5,
     kr: int = 6,
@@ -505,6 +870,7 @@ def api_evaluate(
     imgsz: int = 1024,
     zoom: float = 4.0,
     remove_text: bool = True,
+    proc_view: str = "original",
     postproc: bool = True,
     workers: int = 0,
 ) -> dict:
@@ -553,8 +919,8 @@ def api_evaluate(
             img, used, model=model, crop=crop, min_symbol_px=min_symbol_px,
             max_symbol_px=max_symbol_px, pad=pad, filt=filt, ksize=ksize,
             kernels=(kr, kg, kb), tile=tile, nms_iou=nms_iou, imgsz=imgsz,
-            rid=rid, wid=wid, zoom=zoom, remove_text=remove_text, postproc=postproc,
-            workers=workers,
+            rid=rid, wid=wid, zoom=zoom, remove_text=remove_text,
+            proc_view=proc_view, postproc=postproc, workers=workers,
         )
     except FileNotFoundError as exc:
         raise HTTPException(status_code=503, detail=str(exc))
@@ -790,6 +1156,15 @@ def index() -> FileResponse:
     # Don't cache the HTML so the versioned ?v= asset links are always re-read.
     return FileResponse(
         STATIC_DIR / "index.html",
+        headers={"Cache-Control": "no-store, must-revalidate"},
+    )
+
+
+@app.get("/quill")
+def quill_page() -> FileResponse:
+    # "Visual Quill" preview page for bbox dryruns (see /api/quill/*).
+    return FileResponse(
+        STATIC_DIR / "quill.html",
         headers={"Cache-Control": "no-store, must-revalidate"},
     )
 

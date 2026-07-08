@@ -1,4 +1,4 @@
-"""Unified per-point box finder for FastSAM / HQ-SAM (and their per-point ``mix``).
+"""Unified per-point box finder for FastSAM-S / FastSAM-X / HQ-SAM.
 
 Detection is **always per-point**: a small crop is taken around each reference
 point, optionally grown when the mask clips the crop edge, and the selected
@@ -79,18 +79,25 @@ class SamBox:
     h: int
     score: float
     name: str
-    source: str  # "fastsam" | "hqsam" | "cc"
+    source: str  # "fastsam" | "fastsamx" | "hqsam" | "cc"
     # Raw segmentation, only when ``collect_masks``/``postproc``. ``mask`` is a bool
     # array cropped to its bbox; ``mx``/``my`` are its global top-left corner.
     mask: np.ndarray | None = None
     mx: int = 0
     my: int = 0
+    # Convex-hull-based minimum-area rotated rectangle: 4 corners [[x, y], ...] in
+    # global px, set only when the ``hull`` option is on. Display-only -- the
+    # axis-aligned x/y/w/h stays the primary box for NMS/eval/cropping.
+    hull: list[list[int]] | None = None
 
     def as_dict(self) -> dict:
-        return {
+        d = {
             "x": self.x, "y": self.y, "w": self.w, "h": self.h,
             "score": round(self.score, 4), "name": self.name, "source": self.source,
         }
+        if self.hull is not None:
+            d["hull"] = self.hull
+        return d
 
 
 def _cc_fallback(crop: np.ndarray, cx: int, cy: int, min_px: int):
@@ -108,6 +115,18 @@ def _cc_fallback(crop: np.ndarray, cx: int, cy: int, min_px: int):
     return None
 
 
+def _mask_obb(mask: np.ndarray, mx: int, my: int) -> list[list[int]] | None:
+    """4 corners of the minimum-area (rotated) rectangle fitted to the mask's
+    foreground -- derived from its convex hull -- in global image coords.
+    ``None`` when the mask has too few pixels to fit a rectangle."""
+    ys, xs = np.where(mask)
+    if xs.size < 3:
+        return None
+    pts = np.column_stack((xs, ys)).astype(np.int32)
+    box = cv2.boxPoints(cv2.minAreaRect(pts))  # minAreaRect fits the hull of pts
+    return [[int(round(px)) + mx, int(round(py)) + my] for px, py in box]
+
+
 # --- per-model behaviour ---------------------------------------------------
 @dataclass
 class _Flavor:
@@ -119,7 +138,7 @@ class _Flavor:
 
 
 def _flavor(model: str, grow_on_clip: bool) -> _Flavor:
-    if model == "fastsam":
+    if model in ("fastsam", "fastsamx"):
         # Segment-everything on a fixed crop; no point negatives / grow / nn-adapt.
         return _Flavor(False, False, False, 0, False)
     if model == "hqsam":
@@ -160,15 +179,15 @@ def boxes_from_points(
     tile_overlap: int = 96,
     collect_masks: bool = False,
     postproc: bool = False,
+    hull: bool = False,
     tile_provider=None,
     image_shape: tuple[int, int] | None = None,
     workers: int = 0,
 ) -> list[SamBox]:
     """Return one box per reference point using ``model``.
 
-    ``model`` = ``"mix"`` runs FastSAM and HQ-SAM per point and keeps the tighter
-    (smaller-area) box for each point. ``tile > 0`` chunks the sheet for bounded
-    memory only -- the per-point routine is identical inside each tile.
+    ``tile > 0`` chunks the sheet for bounded memory only -- the per-point routine
+    is identical inside each tile.
 
     When ``tile_provider`` is given (memory-bounded rendering) ``image_bgr`` may be
     ``None``; pass ``image_shape=(H, W)`` of the full rendered sheet so boxes clamp
@@ -176,7 +195,8 @@ def boxes_from_points(
     """
     if not points:
         return []
-    kw = dict(
+    return list(_detect_dict(
+        image_bgr, points, model, postproc=postproc,
         crop=crop,
         max_box_frac=max_box_frac, min_box_px=min_box_px, min_symbol_px=min_symbol_px,
         max_symbol_px=max_symbol_px, size_ratio=size_ratio, crop_nn_frac=crop_nn_frac,
@@ -185,25 +205,9 @@ def boxes_from_points(
         kernels=kernels, grow_on_clip=grow_on_clip, start_crop_frac=start_crop_frac,
         grow_factor=grow_factor, max_grows=max_grows, imgsz=imgsz, conf=conf, iou=iou,
         tile=tile, tile_overlap=tile_overlap, collect_masks=collect_masks,
+        hull=hull,
         tile_provider=tile_provider, image_shape=image_shape, workers=workers,
-    )
-    if model == "mix":
-        fp = _detect_dict(image_bgr, points, "fastsam", postproc=postproc, **kw)
-        hp = _detect_dict(image_bgr, points, "hqsam", postproc=False, **kw)
-        return _merge_mix(fp, hp)
-    return list(_detect_dict(image_bgr, points, model, postproc=postproc, **kw).values())
-
-
-def _merge_mix(fp: dict, hp: dict) -> list[SamBox]:
-    """Per-point union of the two model dicts: keep the smaller-area box per point."""
-    out: list[SamBox] = []
-    for pi in set(fp) | set(hp):
-        a, b = fp.get(pi), hp.get(pi)
-        if a is not None and b is not None:
-            out.append(a if a.w * a.h <= b.w * b.h else b)
-        else:
-            out.append(a if a is not None else b)
-    return out
+    ).values())
 
 
 def _detect_dict(
@@ -211,7 +215,7 @@ def _detect_dict(
     min_box_px, min_symbol_px, max_symbol_px, size_ratio, crop_nn_frac, pad,
     max_negatives, fallback, filt, ksize, kernels, grow_on_clip, start_crop_frac,
     grow_factor, max_grows, imgsz, conf, iou, tile, tile_overlap, collect_masks,
-    postproc, tile_provider, image_shape, workers,
+    hull, postproc, tile_provider, image_shape, workers,
 ) -> dict:
     """Run one model over ``points`` and return {point_index: SamBox}."""
     import progress as pg
@@ -228,7 +232,7 @@ def _detect_dict(
     # rejects most of them at high zoom (recall 32->8 at 4x), so postproc is off.
     if model == "hqsam":
         postproc = False
-    want_mask = collect_masks or postproc
+    want_mask = collect_masks or postproc or hull
     if postproc:
         import mask_postproc as mpp
     H, W = image_shape if image_shape is not None else image_bgr.shape[:2]
@@ -333,6 +337,8 @@ def _detect_dict(
             box = SamBox(fx0, fy0, fx1 - fx0, fy1 - fy0, sc, p.name, adapter_name)
             if chosen_mask is not None:
                 box.mask, box.mx, box.my = chosen_mask
+                if hull:
+                    box.hull = _mask_obb(*chosen_mask)
             return box
 
         if fallback:

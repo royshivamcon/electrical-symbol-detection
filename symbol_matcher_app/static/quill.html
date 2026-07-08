@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Visual Quill</title>
+  <link rel="stylesheet" href="/static/style.css?v=19" />
+</head>
+<body>
+  <header>
+    <h1>Visual Quill</h1>
+    <p class="subtitle">Preview a bbox dryrun: the worksheet image with every detected symbol boxed in its quill layer color.</p>
+    <label class="mode-select">Mode
+      <select id="mode-select">
+        <option value="/quill" selected>Visual Quill</option>
+        <option value="/">Detect boxes</option>
+      </select>
+    </label>
+  </header>
+
+  <section class="controls">
+    <div class="group">
+      <span class="group-label">Dryrun</span>
+      <div class="group-row">
+        <label>
+          File
+          <select id="dryrun-select"><option value="">Loading…</option></select>
+        </label>
+        <span id="dryrun-info" class="muted"></span>
+      </div>
+    </div>
+
+    <div class="spacer"></div>
+
+    <div class="zoom-group" id="zoom-group" hidden>
+      <button id="zoom-out" title="Zoom out">&minus;</button>
+      <span id="zoom-val">100%</span>
+      <button id="zoom-in" title="Zoom in">+</button>
+      <button id="zoom-fit" title="Fit to view">Fit</button>
+      <button id="zoom-100" title="Actual size">1:1</button>
+    </div>
+  </section>
+
+  <p id="status" class="status"></p>
+
+  <div id="layers" class="layers" hidden>
+    <span class="layers-title">Layers:</span>
+    <div id="layers-list" style="display:contents"></div>
+  </div>
+
+  <section class="stage-wrap" id="stage-wrap">
+    <div id="stage" class="stage">
+      <img id="worksheet-img" alt="" />
+      <svg id="overlay" xmlns="http://www.w3.org/2000/svg"></svg>
+    </div>
+  </section>
+
+  <footer>
+    <span id="hint">Drag to pan &middot; scroll to zoom &middot; use <b>Layers</b> to show/hide each symbol group.</span>
+  </footer>
+
+  <script src="/static/quill.js?v=1"></script>
+</body>
+</html>

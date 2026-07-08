@@ -7,8 +7,8 @@ const rematchBtn = document.getElementById("rematch-btn");
 const clearBtn = document.getElementById("clear-btn");
 const selectBtn = document.getElementById("select-btn");
 const samBtn = document.getElementById("sam-btn");
+const fastsamxBtn = document.getElementById("fastsamx-btn");
 const hqsamBtn = document.getElementById("hqsam-btn");
-const mixBtn = document.getElementById("mix-btn");
 const toolsRow = document.getElementById("tools");
 const filterSelect = document.getElementById("filter-select");
 const ksizeInput = document.getElementById("ksize");
@@ -21,8 +21,15 @@ const tileSelect = document.getElementById("tile-select");
 const zoomProcSelect = document.getElementById("zoom-proc-select");
 const removeText = document.getElementById("remove-text");
 const procViewSelect = document.getElementById("proc-view-select");
+const showTileGrid = document.getElementById("show-tile-grid");
+const tileHighlight = document.getElementById("tile-highlight");
 const postprocCheck = document.getElementById("postproc");
+const hullCheck = document.getElementById("hull");
 const maskLayer = document.getElementById("mask-layer");
+const maskModelSelect = document.getElementById("mask-model-select");
+const maskMinScore = document.getElementById("mask-min-score");
+const maskMinVal = document.getElementById("mask-min-val");
+const maskScanBtn = document.getElementById("mask-scan-btn");
 const anRemoveText = document.getElementById("an-remove-text");
 const evalModel = document.getElementById("eval-model");
 const evalGt = document.getElementById("eval-gt");
@@ -61,14 +68,34 @@ const PALETTE = [
   "#f1c40f", // yellow
   "#ff6bcb", // pink
 ];
-const SAM_COLORS = { fastsam: "#00e5ff", hqsam: "#ff3df0", mix: "#b388ff" }; // cyan / magenta / purple
+const SAM_MODELS = {
+  fastsam:  { label: "FastSAM-S (cyan)",   color: "#00e5ff", btn: () => samBtn },
+  fastsamx: { label: "FastSAM-X (orange)", color: "#ff9100", btn: () => fastsamxBtn },
+  hqsam:    { label: "HQ-SAM (magenta)",   color: "#ff3df0", btn: () => hqsamBtn },
+};
+const SAM_COLORS = Object.fromEntries(Object.entries(SAM_MODELS).map(([k, v]) => [k, v.color]));
 const POINT_COLOR = "#ff1744"; // ground-truth reference points (red crosshair)
 const PATCH_COLOR = "#76ff03"; // ground-truth polygon patches (green box)
 const EVAL_TP_COLOR = "#00e676"; // matched prediction (green)
 const EVAL_FP_COLOR = "#ff5252"; // false-positive prediction (red)
 const EVAL_MISS_COLOR = "#ffd600"; // missed GT (yellow)
+const TILE_GRID_COLOR = "#ff8c00"; // orange tile outlines (notebook BGR 0,140,255)
+const TILE_HIGHLIGHT_COLOR = "#ff0000"; // walkthrough / selected tile
+const SAM_CROP_PX = 100; // matches api_sam_points default crop
+const TILE_OVERLAP_BASE = 96; // boxes_from_points tile_overlap default
+const PROC_VIEWS = ["original", "binary", "suppressed"];
 const MIN_ZOOM = 0.1;
 const MAX_ZOOM = 12;
+
+function emptyViewState() {
+  return {
+    sam: { fastsam: [], fastsamx: [], hqsam: [] },
+    eval: { pred: [], gt: [] },
+    layers: { masks: false, segment: false },
+    lastSamModel: "fastsam",
+    lastSegmentModel: "fastsam",
+  };
+}
 
 let state = {
   rid: null,
@@ -79,24 +106,74 @@ let state = {
   zoom: 1,
   // Each entry: {selection:{x,y,w,h}, template:{x,y,w,h}, matches:[], color}
   selections: [],
-  sam: { fastsam: [], hqsam: [], mix: [] }, // SAM boxes per model from reference points
+  sam: { fastsam: [], fastsamx: [], hqsam: [] }, // SAM boxes per model from reference points
   refPoints: [], // ground-truth reference points (electrical Point features)
   refPolygons: [], // ground-truth polygon patches (electrical Polygon features)
   eval: { pred: [], gt: [] }, // last evaluation: tagged prediction + GT boxes
   layers: {
-    points: true, patches: true, matches: true, fastsam: true, hqsam: true,
-    mix: true, masks: false, "eval-tp": true,
+    points: true, patches: true, matches: true, fastsam: true, fastsamx: true, hqsam: true,
+    masks: false, segment: false, "eval-tp": true,
     "eval-fp": true, "eval-missed": true,
   }, // visibility toggles
+  // Per processing-view cache: SAM boxes, eval, mask layers survive view switches.
+  byView: Object.fromEntries(PROC_VIEWS.map((v) => [v, emptyViewState()])),
   // Processing options: background view (original/binary/suppressed) + whether
   // SAM masks are symbol_det post-processed. lastSamModel drives the ink-mask layer.
   detect: { view: "original", postproc: true },
   lastSamModel: "fastsam",
   wids: new Set(), // valid wids for the current request
+  tiles: [], // [{x0,y0,x1,y1}, ...] SAM tiling grid in image px
+  highlightTile: -1, // -1 = all orange, >=0 = that tile red
 };
 
 function colorForIndex(i) {
   return PALETTE[i % PALETTE.length];
+}
+
+function currentProcView() {
+  return procViewSelect ? procViewSelect.value : "original";
+}
+
+// Persist the active view's detection overlays before switching backgrounds.
+function saveCurrentViewState() {
+  const view = state.detect.view || "original";
+  state.byView[view] = {
+    sam: {
+      fastsam: [...state.sam.fastsam],
+      fastsamx: [...state.sam.fastsamx],
+      hqsam: [...state.sam.hqsam],
+    },
+    eval: {
+      pred: [...state.eval.pred],
+      gt: [...state.eval.gt],
+    },
+    layers: { masks: state.layers.masks, segment: state.layers.segment },
+    lastSamModel: state.lastSamModel,
+    lastSegmentModel: maskModelSelect ? maskModelSelect.value : "fastsam",
+  };
+}
+
+function restoreViewState(view) {
+  const vs = state.byView[view] || emptyViewState();
+  state.sam = {
+    fastsam: [...vs.sam.fastsam],
+    fastsamx: [...vs.sam.fastsamx],
+    hqsam: [...vs.sam.hqsam],
+  };
+  state.eval = { pred: [...vs.eval.pred], gt: [...vs.eval.gt] };
+  state.layers.masks = vs.layers.masks;
+  state.layers.segment = vs.layers.segment;
+  state.lastSamModel = vs.lastSamModel || "fastsam";
+  if (maskModelSelect) maskModelSelect.value = vs.lastSegmentModel || "fastsam";
+  const maskCb = layersPanel.querySelector('input[data-layer="masks"]');
+  const segCb = layersPanel.querySelector('input[data-layer="segment"]');
+  if (maskCb) maskCb.checked = state.layers.masks;
+  if (segCb) segCb.checked = state.layers.segment;
+  evalMetrics.hidden = !state.eval.pred.length && !state.eval.gt.length;
+  if (state.eval.pred.length || state.eval.gt.length) {
+    // metrics table is rebuilt on evaluate; hide if we only restored boxes
+    if (!evalMetrics.querySelector(".metric-tbl")) evalMetrics.hidden = true;
+  }
 }
 
 function setStatus(msg, isError = false) {
@@ -234,10 +311,11 @@ function resolveWid() {
 async function loadImage() {
   clearOverlay();
   state.selections = [];
-  state.sam = { fastsam: [], hqsam: [], mix: [] };
+  state.sam = { fastsam: [], fastsamx: [], hqsam: [] };
   state.refPoints = [];
   state.refPolygons = [];
   state.eval = { pred: [], gt: [] };
+  state.byView = Object.fromEntries(PROC_VIEWS.map((v) => [v, emptyViewState()]));
   evalMetrics.hidden = true;
   rematchBtn.disabled = true;
   clearBtn.disabled = true;
@@ -268,19 +346,29 @@ async function loadImage() {
   if (matchMethod) matchMethod.disabled = false;
   samBtn.disabled = false;
   hqsamBtn.disabled = false;
-  mixBtn.disabled = false;
+  fastsamxBtn.disabled = false;
   filterSelect.disabled = false;
   tileSelect.disabled = false;
   zoomProcSelect.disabled = false;
   if (removeText) removeText.disabled = false;
   if (procViewSelect) { procViewSelect.disabled = false; procViewSelect.value = "original"; }
+  if (showTileGrid) { showTileGrid.disabled = false; showTileGrid.checked = false; }
+  if (tileHighlight) { tileHighlight.disabled = true; tileHighlight.innerHTML = '<option value="-1">All</option>'; }
+  state.tiles = [];
+  state.highlightTile = -1;
   if (postprocCheck) postprocCheck.disabled = false;
+  if (hullCheck) hullCheck.disabled = false;
   state.detect.view = "original";
-  // A fresh sheet: turn the (per-model) ink-mask layer off until re-run.
   state.layers.masks = false;
+  state.layers.segment = false;
   const maskCb = layersPanel.querySelector('input[data-layer="masks"]');
+  const segCb = layersPanel.querySelector('input[data-layer="segment"]');
   if (maskCb) maskCb.checked = false;
+  if (segCb) segCb.checked = false;
   if (maskLayer) { maskLayer.hidden = true; maskLayer.removeAttribute("src"); }
+  if (maskModelSelect) maskModelSelect.disabled = false;
+  if (maskMinScore) maskMinScore.disabled = false;
+  if (maskScanBtn) maskScanBtn.disabled = false;
   evalModel.disabled = false;
   evalGt.disabled = false;
   evalIou.disabled = false;
@@ -291,6 +379,7 @@ async function loadImage() {
   setTool("pan");
   loadRefPoints();
   loadRefPolygons();
+  refreshTileGrid();
   setStatus(`Loaded ${state.natW}×${state.natH}px. Drag to pan; click "Select symbol" to pick one.`);
 }
 
@@ -375,6 +464,21 @@ function addRect(x, y, w, h, color, dashed = false, fill = false) {
   return rect;
 }
 
+// Draw an arbitrary polygon (e.g. a convex-hull / rotated box) from [[x,y], …]
+// image-pixel corners. Mirrors addRect's fill/stroke so hull boxes match the
+// look of the axis-aligned ones.
+function addPolygon(pts, color, fill = false) {
+  const poly = document.createElementNS(SVGNS, "polygon");
+  poly.setAttribute("points", pts.map(([x, y]) => `${x},${y}`).join(" "));
+  poly.setAttribute("fill", fill ? color : "none");
+  if (fill) poly.setAttribute("fill-opacity", "0.25");
+  poly.setAttribute("stroke", color);
+  poly.setAttribute("stroke-width", 2);
+  poly.setAttribute("vector-effect", "non-scaling-stroke");
+  overlay.appendChild(poly);
+  return poly;
+}
+
 // A small crosshair marker at (x, y) in image pixels.
 function addPoint(x, y, color) {
   const L = 5; // half-length in image units; stroke stays constant px via vector-effect
@@ -389,9 +493,13 @@ function addPoint(x, y, color) {
 // Redraw every visible layer: selection matches + each SAM model's boxes.
 function redrawAll(extra) {
   clearOverlay();
+  drawTileGrid();
   Object.entries(state.sam).forEach(([model, boxes]) => {
     if (!state.layers[model]) return;
-    boxes.forEach((b) => addRect(b.x, b.y, b.w, b.h, SAM_COLORS[model], false, true));
+    boxes.forEach((b) => {
+      if (b.hull && b.hull.length >= 3) addPolygon(b.hull, SAM_COLORS[model], true);
+      else addRect(b.x, b.y, b.w, b.h, SAM_COLORS[model], false, true);
+    });
   });
   if (state.layers.matches) {
     state.selections.forEach((sel) => {
@@ -435,8 +543,9 @@ function updateLayerCounts() {
   set("cnt-matches", m);
   set("cnt-fastsam", state.sam.fastsam.length);
   set("cnt-hqsam", state.sam.hqsam.length);
-  set("cnt-mix", state.sam.mix.length);
+  set("cnt-fastsamx", state.sam.fastsamx.length);
   set("cnt-masks", state.layers.masks ? "on" : "off");
+  set("cnt-segment", state.layers.segment ? "on" : "off");
   set("cnt-eval-tp", state.eval.pred.filter((b) => b.status === "tp").length);
   set("cnt-eval-fp", state.eval.pred.filter((b) => b.status === "fp").length);
   set("cnt-eval-missed", state.eval.gt.filter((g) => g.status === "missed").length);
@@ -503,6 +612,82 @@ function tileQuery() {
   return t > 0 ? { qs: `&tile=${t}`, tag: `tiled@${t}` } : { qs: "", tag: "" };
 }
 
+// Port of tiling.tile_grid — must stay in sync with symbol_matcher_app/tiling.py.
+function computeTileGrid(w, h, tile, overlap) {
+  tile = Math.max(64, tile | 0);
+  overlap = Math.max(0, Math.min(overlap | 0, tile - 1));
+  const step = Math.max(1, tile - overlap);
+  const starts = (total) => {
+    if (total <= tile) return [0];
+    const s = [];
+    for (let v = 0; v <= total - tile; v += step) s.push(v);
+    if (s[s.length - 1] !== total - tile) s.push(total - tile);
+    return s;
+  };
+  const tiles = [];
+  for (const y0 of starts(h)) {
+    for (const x0 of starts(w)) {
+      tiles.push({ x0, y0, x1: Math.min(x0 + tile, w), y1: Math.min(y0 + tile, h) });
+    }
+  }
+  return tiles;
+}
+
+// Recompute the SAM tile grid from the Tiling select (overlap matches boxes_from_points).
+function refreshTileGrid() {
+  const tile = +tileSelect.value || 0;
+  const tilingOn = tile > 0 && state.natW > 0;
+  if (tileHighlight) tileHighlight.disabled = !tilingOn || !(showTileGrid && showTileGrid.checked);
+  if (!tilingOn) {
+    state.tiles = [];
+    state.highlightTile = -1;
+    if (tileHighlight) {
+      tileHighlight.innerHTML = '<option value="-1">All</option>';
+      tileHighlight.value = "-1";
+    }
+    redrawAll();
+    return;
+  }
+  const overlap = Math.max(TILE_OVERLAP_BASE, 2 * SAM_CROP_PX);
+  state.tiles = computeTileGrid(state.natW, state.natH, tile, overlap);
+  if (tileHighlight) {
+    const prev = state.highlightTile;
+    tileHighlight.innerHTML = '<option value="-1">All</option>';
+    state.tiles.forEach((_, i) => {
+      const opt = document.createElement("option");
+      opt.value = String(i);
+      opt.textContent = `Tile #${i}`;
+      tileHighlight.appendChild(opt);
+    });
+    const valid = prev >= 0 && prev < state.tiles.length;
+    state.highlightTile = valid ? prev : -1;
+    tileHighlight.value = String(state.highlightTile);
+    tileHighlight.disabled = !(showTileGrid && showTileGrid.checked);
+  }
+  redrawAll();
+}
+
+function drawTileGrid() {
+  if (!showTileGrid || !showTileGrid.checked || !state.tiles.length) return;
+  const hi = state.highlightTile;
+  state.tiles.forEach((t, i) => {
+    const w = t.x1 - t.x0;
+    const h = t.y1 - t.y0;
+    const highlighted = hi >= 0 && i === hi;
+    const rect = document.createElementNS(SVGNS, "rect");
+    rect.setAttribute("x", t.x0);
+    rect.setAttribute("y", t.y0);
+    rect.setAttribute("width", w);
+    rect.setAttribute("height", h);
+    rect.setAttribute("fill", "none");
+    rect.setAttribute("stroke", highlighted ? TILE_HIGHLIGHT_COLOR : TILE_GRID_COLOR);
+    rect.setAttribute("stroke-width", highlighted ? 3 : 2);
+    if (!highlighted) rect.setAttribute("stroke-dasharray", "6 4");
+    rect.setAttribute("vector-effect", "non-scaling-stroke");
+    overlay.appendChild(rect);
+  });
+}
+
 // Render-zoom query fragment (quill_forge / fitz PDF render). zoom=1 -> off.
 function zoomQuery() {
   const z = +zoomProcSelect.value || 1;
@@ -514,70 +699,124 @@ function zoomQuery() {
 }
 
 // symbol_det mask post-processing: intersect each SAM mask with the ink and drop
-// small / sparse / line-like ones. Applies to hqsam / fastsam / mix.
+// small / sparse / line-like ones. Applies to hqsam / fastsam / fastsamx.
 function postprocQuery() {
   const on = postprocCheck && postprocCheck.checked;
   return on ? { qs: "&postproc=1", tag: "postproc" } : { qs: "", tag: "" };
 }
 
+// Box each SAM detection as the convex-hull-based rotated rectangle (4 corners)
+// instead of the axis-aligned rect. Applies to hqsam / fastsam / fastsamx.
+function hullQuery() {
+  const on = hullCheck && hullCheck.checked;
+  return on ? { qs: "&hull=1", tag: "hull" } : { qs: "", tag: "" };
+}
+
 // Swap the worksheet background between the original raster and a symbol_det
-// processed view (binary / line-suppressed). Dimensions are unchanged so every
-// overlay stays pixel-aligned.
+// processed view (binary / line-suppressed). Saves/restores per-view overlays.
 function applyProcView() {
   if (!state.natW) return;
-  const view = procViewSelect ? procViewSelect.value : "original";
+  const view = currentProcView();
+  saveCurrentViewState();
   state.detect.view = view;
+  restoreViewState(view);
   const { rid, wid } = state;
   if (view === "original") {
     img.src = `/api/worksheet/${rid}/${wid}/image?t=${Date.now()}`;
-    return;
+  } else {
+    setStatus(`Building ${view === "binary" ? "binary ink" : "line-suppressed"} view…`);
+    const zq = zoomQuery();
+    img.src = `/api/worksheet/${rid}/${wid}/processed?view=${view}${zq.qs}`;
   }
-  setStatus(`Building ${view === "binary" ? "binary ink" : "line-suppressed"} view…`);
-  const zq = zoomQuery();
-  img.src = `/api/worksheet/${rid}/${wid}/processed?view=${view}${zq.qs}`;
+  img.onload = () => {
+    refreshMaskLayers();
+    redrawAll();
+  };
 }
 
-// (Re)load the translucent ink-mask overlay for the current SAM model, or hide it.
-function refreshMaskLayer() {
+function procViewQuery() {
+  const v = currentProcView();
+  return v === "original" ? { qs: "", tag: "" } : { qs: `&proc_view=${v}`, tag: v };
+}
+
+// (Re)load mask overlay(s): segment-everything scan and/or per-point ink masks.
+function refreshMaskLayers({ filterOnly = false } = {}) {
   if (!maskLayer) return;
-  if (!state.layers.masks || !state.natW) {
+  if (!state.natW) {
     maskLayer.hidden = true;
     maskLayer.removeAttribute("src");
     return;
   }
-  const model = state.lastSamModel || "fastsam";
-  const { qs } = filterQuery();
+  const showSegment = state.layers.segment;
+  const showInk = state.layers.masks;
+  if (!showSegment && !showInk) {
+    maskLayer.hidden = true;
+    maskLayer.removeAttribute("src");
+    return;
+  }
+  const { rid, wid } = state;
+  const { qs: fqs } = filterQuery();
   const tq = tileQuery();
   const zq = zoomQuery();
-  const { rid, wid } = state;
-  maskLayer.onload = () => { maskLayer.hidden = false; };
-  maskLayer.src =
-    `/api/worksheet/${rid}/${wid}/sam_masks?model=${model}${qs}${tq.qs}${zq.qs}&postproc=1&t=${Date.now()}`;
+  const pv = procViewQuery();
+  const tile = +tileSelect.value || 1024;
+  const minConf = maskMinScore ? parseFloat(maskMinScore.value) : 0.25;
+  let url;
+  if (showSegment) {
+    const model = maskModelSelect ? maskModelSelect.value : "fastsam";
+    if (!filterOnly) {
+      setStatus(`Building segment mask overlay (${model})… (first run may take a few minutes)`);
+    }
+    url =
+      `/api/worksheet/${rid}/${wid}/segment_masks?model=${model}${fqs}${tq.qs}${zq.qs}${pv.qs}` +
+      `&tile=${tile}&min_score=${minConf}`;
+  } else {
+    const model = state.lastSamModel || "fastsam";
+    setStatus(`Building per-point mask overlay (${model})…`);
+    url =
+      `/api/worksheet/${rid}/${wid}/sam_masks?model=${model}${fqs}${tq.qs}${zq.qs}${pv.qs}` +
+      `&postproc=1&tile=${tile}`;
+  }
+  maskLayer.onload = () => {
+    maskLayer.hidden = false;
+    setStatus("");
+  };
+  maskLayer.onerror = () => setStatus("Mask overlay failed to load", true);
+  maskLayer.src = url;
+}
+
+function refreshMaskLayer() {
+  refreshMaskLayers();
 }
 
 // Segment symbols from the worksheet's reference points with the chosen SAM model.
-const SAM_LABEL = { fastsam: "FastSAM (cyan)", hqsam: "HQ-SAM (magenta)", mix: "Mix HQ+Fast (purple)" };
-const SAM_BTN = { fastsam: () => samBtn, hqsam: () => hqsamBtn, mix: () => mixBtn };
+const SAM_LABEL = Object.fromEntries(Object.entries(SAM_MODELS).map(([k, v]) => [k, v.label]));
+const SAM_BTN = Object.fromEntries(Object.entries(SAM_MODELS).map(([k, v]) => [k, v.btn]));
 async function runSam(model) {
   const btn = SAM_BTN[model]();
   const { qs, tag } = filterQuery();
   const tq = tileQuery();
   const zq = zoomQuery();
   const pq = postprocQuery();
-  const tags = [tag, tq.tag, zq.tag, pq.tag].filter(Boolean).join(", ");
+  const hq = hullQuery();
+  const pv = procViewQuery();
+  const tags = [tag, tq.tag, zq.tag, pq.tag, hq.tag, pv.tag].filter(Boolean).join(", ");
   const preTag = tags ? ` (${tags})` : "";
   setStatus(`Running ${SAM_LABEL[model]}${preTag} on reference points… (first run loads the model)`);
   btn.disabled = true;
   state.lastSamModel = model;
+  const wantMasks = state.layers.masks;
   try {
+    const masksQs = wantMasks ? "&masks=1" : "";
     const r = await fetch(
-      `/api/worksheet/${state.rid}/${state.wid}/sam_points?model=${model}${qs}${tq.qs}${zq.qs}${pq.qs}`
+      `/api/worksheet/${state.rid}/${state.wid}/sam_points?model=${model}${qs}${tq.qs}${zq.qs}${pq.qs}${hq.qs}${pv.qs}${masksQs}`
     );
     if (!r.ok) throw new Error((await r.json()).detail || r.statusText);
     const data = await r.json();
     state.sam[model] = data.boxes;
+    saveCurrentViewState();
     redrawAll();
-    if (state.layers.masks) refreshMaskLayer();
+    if (state.layers.masks || state.layers.segment) refreshMaskLayers();
     clearBtn.disabled = false;
     if (!data.total_points) {
       setStatus("No reference points found in worksheet geometries for this sheet.", true);
@@ -588,6 +827,44 @@ async function runSam(model) {
     setStatus(`SAM failed: ${e.message}`, true);
   } finally {
     btn.disabled = false;
+  }
+}
+
+async function runMaskScan() {
+  const model = maskModelSelect ? maskModelSelect.value : "fastsam";
+  const { qs, tag } = filterQuery();
+  const tq = tileQuery();
+  const zq = zoomQuery();
+  const pv = procViewQuery();
+  const minConf = maskMinScore ? parseFloat(maskMinScore.value) : 0.25;
+  const tile = +tileSelect.value || 1024;
+  const tags = [tag, tq.tag, zq.tag, pv.tag].filter(Boolean).join(", ");
+  const preTag = tags ? ` (${tags})` : "";
+  setStatus(`Running segment-everything mask scan (${model})${preTag}… (first run loads the model)`);
+  if (maskScanBtn) maskScanBtn.disabled = true;
+  state.layers.segment = true;
+  const segCb = layersPanel.querySelector('input[data-layer="segment"]');
+  if (segCb) segCb.checked = true;
+  saveCurrentViewState();
+  try {
+    const r = await fetch(
+      `/api/worksheet/${state.rid}/${state.wid}/segment_masks?model=${model}${qs}${tq.qs}${zq.qs}${pv.qs}` +
+      `&tile=${tile}&min_score=${minConf}&t=${Date.now()}`
+    );
+    if (!r.ok) throw new Error((await r.json()).detail || r.statusText);
+    const blob = await r.blob();
+    if (maskLayer) {
+      maskLayer.onload = () => { maskLayer.hidden = false; };
+      maskLayer.src = URL.createObjectURL(blob);
+    }
+    saveCurrentViewState();
+    updateLayerCounts();
+    clearBtn.disabled = false;
+    setStatus(`Mask scan (${model})${preTag}: overlay ready (min conf ${minConf.toFixed(2)}). Toggle "Segment masks" layer.`);
+  } catch (e) {
+    setStatus(`Mask scan failed: ${e.message}`, true);
+  } finally {
+    if (maskScanBtn) maskScanBtn.disabled = false;
   }
 }
 
@@ -628,7 +905,8 @@ async function runEvaluate() {
   const tq = tileQuery();
   const zq = zoomQuery();
   const pq = postprocQuery();
-  const tags = [tag, tq.tag, zq.tag, pq.tag].filter(Boolean).join(", ");
+  const pv = procViewQuery();
+  const tags = [tag, tq.tag, zq.tag, pq.tag, pv.tag].filter(Boolean).join(", ");
   const preTag = tags ? ` [${tags}]` : "";
   const how = mode === "points"
     ? "prompting at GT points, scoring center-hit"
@@ -637,12 +915,13 @@ async function runEvaluate() {
   evalBtn.disabled = true;
   try {
     const r = await fetch(
-      `/api/worksheet/${state.rid}/${state.wid}/evaluate?model=${model}&gt=${mode}&iou_thr=${iou}${qs}${tq.qs}${zq.qs}${pq.qs}`
+      `/api/worksheet/${state.rid}/${state.wid}/evaluate?model=${model}&gt=${mode}&iou_thr=${iou}${qs}${tq.qs}${zq.qs}${pq.qs}${pv.qs}`
     );
     if (!r.ok) throw new Error((await r.json()).detail || r.statusText);
     const data = await r.json();
     state.eval = { pred: data.boxes || [], gt: data.gt || [] };
     renderMetrics(data.metrics);
+    saveCurrentViewState();
     redrawAll();
     clearBtn.disabled = false;
     const c = data.metrics.center, i = data.metrics.iou;
@@ -874,8 +1153,8 @@ patchesOnly.addEventListener("change", () => {
 loadBtn.addEventListener("click", () => state.wid && loadImage());
 selectBtn.addEventListener("click", () => setTool(tool === "select" ? "pan" : "select"));
 samBtn.addEventListener("click", () => runSam("fastsam"));
+fastsamxBtn.addEventListener("click", () => runSam("fastsamx"));
 hqsamBtn.addEventListener("click", () => runSam("hqsam"));
-mixBtn.addEventListener("click", () => runSam("mix"));
 filterSelect.addEventListener("change", updateFilterFields);
 evalBtn.addEventListener("click", runEvaluate);
 evalIou.addEventListener("input", () => {
@@ -889,8 +1168,10 @@ anRun.addEventListener("click", runAnalysis);
 layersPanel.querySelectorAll("input[data-layer]").forEach((cb) => {
   cb.addEventListener("change", () => {
     state.layers[cb.dataset.layer] = cb.checked;
-    if (cb.dataset.layer === "masks") {
-      refreshMaskLayer();
+    if (cb.dataset.layer === "masks" || cb.dataset.layer === "segment") {
+      saveCurrentViewState();
+      refreshMaskLayers();
+      updateLayerCounts();
     } else {
       redrawAll();
     }
@@ -900,30 +1181,58 @@ layersPanel.querySelectorAll("input[data-layer]").forEach((cb) => {
 // Processing-view select swaps the background; post-process re-fetches the ink
 // masks if their layer is showing (its effect on boxes is applied on the next run).
 if (procViewSelect) procViewSelect.addEventListener("change", applyProcView);
+if (showTileGrid) {
+  showTileGrid.addEventListener("change", () => {
+    if (tileHighlight) tileHighlight.disabled = !showTileGrid.checked || !(+tileSelect.value > 0);
+    redrawAll();
+  });
+}
+if (tileHighlight) {
+  tileHighlight.addEventListener("change", () => {
+    state.highlightTile = parseInt(tileHighlight.value, 10);
+    redrawAll();
+  });
+}
+if (tileSelect) tileSelect.addEventListener("change", refreshTileGrid);
 if (postprocCheck) {
   postprocCheck.addEventListener("change", () => {
     state.detect.postproc = postprocCheck.checked;
-    if (state.layers.masks) refreshMaskLayer();
+    if (state.layers.masks) refreshMaskLayers();
   });
 }
 // Keep the active processed view / mask overlay in sync with render zoom + text.
-[zoomProcSelect, removeText].forEach((el) => {
+[zoomProcSelect, removeText, filterSelect, ksizeInput, krInput, kgInput, kbInput].forEach((el) => {
   if (!el) return;
   el.addEventListener("change", () => {
     if (state.detect.view !== "original") applyProcView();
-    if (state.layers.masks) refreshMaskLayer();
+    else if (state.layers.masks || state.layers.segment) refreshMaskLayers();
   });
 });
+if (maskMinScore) {
+  let maskScoreTimer = null;
+  maskMinScore.addEventListener("input", () => {
+    if (maskMinVal) maskMinVal.textContent = parseFloat(maskMinScore.value).toFixed(2);
+    if (!state.layers.segment) return;
+    setStatus("Updating mask filter…");
+    clearTimeout(maskScoreTimer);
+    maskScoreTimer = setTimeout(() => refreshMaskLayers({ filterOnly: true }), 150);
+  });
+}
+if (maskScanBtn) maskScanBtn.addEventListener("click", runMaskScan);
 rematchBtn.addEventListener("click", rematchAll);
 clearBtn.addEventListener("click", () => {
   state.selections = [];
-  state.sam = { fastsam: [], hqsam: [], mix: [] };
+  state.sam = { fastsam: [], fastsamx: [], hqsam: [] };
   state.eval = { pred: [], gt: [] };
-  evalMetrics.hidden = true;
   state.layers.masks = false;
+  state.layers.segment = false;
+  evalMetrics.hidden = true;
   const maskCb = layersPanel.querySelector('input[data-layer="masks"]');
+  const segCb = layersPanel.querySelector('input[data-layer="segment"]');
   if (maskCb) maskCb.checked = false;
+  if (segCb) segCb.checked = false;
   if (maskLayer) { maskLayer.hidden = true; maskLayer.removeAttribute("src"); }
+  saveCurrentViewState();
   redrawAll(); // keeps the ground-truth points/patches layers visible
   rematchBtn.disabled = true;
   clearBtn.disabled = true;
@@ -944,5 +1253,13 @@ window.addEventListener("resize", () => {
   if (!state.natW) return;
   syncOverlaySize();
 });
+
+// Header page switcher: "Detect boxes" (this page) <-> "Visual Quill" (/quill).
+const modeSelect = document.getElementById("mode-select");
+if (modeSelect) {
+  modeSelect.addEventListener("change", () => {
+    window.location.href = modeSelect.value;
+  });
+}
 
 loadRequests();

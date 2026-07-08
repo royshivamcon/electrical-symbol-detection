@@ -24,7 +24,10 @@ import numpy as np
 
 APP_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = APP_DIR.parent
-FASTSAM_CKPT = PROJECT_ROOT / "models" / "FastSAM-s.pt"
+FASTSAM_CKPTS: dict[str, tuple[Path, str]] = {
+    "fastsam": (PROJECT_ROOT / "models" / "FastSAM-s.pt", "FastSAM-s.pt"),
+    "fastsamx": (PROJECT_ROOT / "models" / "FastSAM-x.pt", "FastSAM-x.pt"),
+}
 HQSAM_CKPT = PROJECT_ROOT / "models" / "sam_hq_vit_tiny.pth"
 
 # HQ-SAM masks hug the ink tightly and can clip the symbol, so it runs with a
@@ -73,6 +76,15 @@ def _device() -> str:
 
 
 # --- FastSAM helpers -------------------------------------------------------
+def _fastsam_rgb(crop: np.ndarray) -> np.ndarray:
+    """Ultralytics FastSAM expects RGB; our pipeline stores OpenCV BGR."""
+    if crop.ndim == 2:
+        return cv2.cvtColor(crop, cv2.COLOR_GRAY2RGB)
+    if crop.ndim == 3 and crop.shape[2] == 3:
+        return cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
+    return crop
+
+
 def _covering_masks(res, cx, cy, ch, cw, crop_area, max_box_frac):
     """Every non-background mask covering (cx, cy) as (area, bbox, conf, mask)."""
     covering = []
@@ -173,10 +185,13 @@ def _mask_bbox(mask, cy, cx, min_box_px, max_box_frac, crop_area, max_symbol_px)
 
 # --- adapters --------------------------------------------------------------
 class FastAdapter:
-    name = "fastsam"
     needs_negatives = False
 
-    def __init__(self):
+    def __init__(self, name: str):
+        if name not in FASTSAM_CKPTS:
+            raise ValueError(f"unknown FastSAM variant: {name!r}")
+        self.name = name
+        self._local_ckpt, self._fallback_ckpt = FASTSAM_CKPTS[name]
         self._model = None
         self._lock = threading.Lock()
 
@@ -188,14 +203,14 @@ class FastAdapter:
             if self._model is None:
                 from ultralytics import FastSAM
 
-                path = str(FASTSAM_CKPT) if FASTSAM_CKPT.exists() else "FastSAM-s.pt"
+                path = str(self._local_ckpt) if self._local_ckpt.exists() else self._fallback_ckpt
                 self._model = FastSAM(path)
         return self._model
 
     def encode_predict(self, model_crop, cx, cy, negatives, *, want_mask, cfg: Cfg):
         model = self.get_model()
         ch, cw = model_crop.shape[:2]
-        res = model(model_crop, imgsz=cfg.imgsz, conf=cfg.conf, iou=cfg.iou,
+        res = model(_fastsam_rgb(model_crop), imgsz=cfg.imgsz, conf=cfg.conf, iou=cfg.iou,
                     retina_masks=True, verbose=False)[0]
         covering = _covering_masks(res, cx, cy, ch, cw, ch * cw, cfg.max_box_frac)
         if not covering:
@@ -281,15 +296,15 @@ _ADAPTERS_LOCK = threading.Lock()
 
 
 def _make_adapter(name: str):
-    if name == "fastsam":
-        return FastAdapter()
+    if name in FASTSAM_CKPTS:
+        return FastAdapter(name)
     if name == "hqsam":
         return HQAdapter()
     raise ValueError(f"unknown seg model: {name!r}")
 
 
 def get_model(name: str):
-    """Return a cached adapter singleton for ``name`` ("fastsam" | "hqsam")."""
+    """Return a cached adapter singleton for ``name`` ("fastsam" | "fastsamx" | "hqsam")."""
     a = _ADAPTERS.get(name)
     if a is not None:
         return a

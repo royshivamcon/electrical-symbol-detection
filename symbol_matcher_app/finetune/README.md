@@ -83,6 +83,10 @@ PY=../.envs/vsam/bin/python
 $PY finetune/prep_dataset.py --limit-sheets 5
 #    optional: pin to one request's sheets
 #    $PY finetune/prep_dataset.py --rid 0ead8522-b3a9-4bd6-a430-dd0b4dbec6ad --limit-sheets 5
+#    multi-request sample (10 random rids × 10 random sheets each; use --out to keep existing dataset/):
+#    $PY finetune/prep_dataset.py --limit-rids 10 --sheets-per-rid 10 --out finetune/dataset_10x10
+#    or pass explicit rids:
+#    $PY finetune/prep_dataset.py --rid RID1 RID2 ... --sheets-per-rid 10
 
 # 2) TRAIN the head (plain BCE; writes finetune/checkpoints/mask_conf.pt):
 $PY finetune/train.py --epochs 20

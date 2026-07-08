@@ -18,6 +18,7 @@ The full ``base*zoom`` sheet is never materialized: tiles are rendered on demand
 
 Run from the app dir (so bare imports resolve):
     ../.envs/vsam/bin/python finetune/prep_dataset.py --limit-sheets 5
+    ../.envs/vsam/bin/python finetune/prep_dataset.py --limit-rids 10 --sheets-per-rid 10
 """
 
 from __future__ import annotations
@@ -192,7 +193,7 @@ def _process_sheet(rid: str, wid: str, base_w: int, base_h: int, cfg: PrepCfg,
                 bt = chunk_tiles[b0:b0 + FS_BATCH]
                 bc = chunk_crops[b0:b0 + FS_BATCH]
                 with torch.no_grad():
-                    bres = model(bc, imgsz=cfg.imgsz, conf=cfg.conf, iou=cfg.iou,
+                    bres = model([sm._fastsam_rgb(c) for c in bc], imgsz=cfg.imgsz, conf=cfg.conf, iou=cfg.iou,
                                  retina_masks=True, verbose=False)
                 for res, crop, (ty0, tx0, ty1, tx1) in zip(bres, bc, bt):
                     ch, cw = crop.shape[:2]
@@ -250,12 +251,44 @@ def _process_sheet(rid: str, wid: str, base_w: int, base_h: int, cfg: PrepCfg,
     return {"pts": len(pts), "gt": len(gt), "pos": n_pos, "neg": n_neg}
 
 
+def _resolve_rids(explicit: list[str] | None, limit_rids: int, seed: int) -> list[str]:
+    """Pick which request ids to process.
+
+    Explicit ``--rid`` list wins; otherwise randomly sample ``limit_rids`` from
+    cached requests (or return all when ``limit_rids`` is 0).
+    """
+    if explicit:
+        return list(explicit)
+    all_rids = wl.list_requests()
+    if not limit_rids or limit_rids >= len(all_rids):
+        return all_rids
+    rng = random.Random(seed)
+    return rng.sample(all_rids, limit_rids)
+
+
+def _sample_sheets(wsheets: list[dict], sheets_per_rid: int, seed: int, rid: str) -> list[dict]:
+    """Optionally shuffle and cap eligible worksheets for one request."""
+    if not sheets_per_rid or sheets_per_rid >= len(wsheets):
+        return wsheets
+    # Per-rid seed so different requests don't share the same sheet shuffle order.
+    rng = random.Random(seed ^ hash(rid))
+    picked = list(wsheets)
+    rng.shuffle(picked)
+    return picked[:sheets_per_rid]
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--limit-sheets", type=int, default=0, help="0 = all sheets with points")
+    ap.add_argument("--limit-sheets", type=int, default=0,
+                    help="global sheet cap across all rids (0 = no global cap)")
+    ap.add_argument("--limit-rids", type=int, default=0,
+                    help="randomly sample N request ids (0 = all; ignored if --rid is set)")
+    ap.add_argument("--sheets-per-rid", type=int, default=0,
+                    help="randomly sample up to N sheets per rid (0 = all eligible)")
     ap.add_argument("--limit-points", type=int, default=0, help="0 = all GT points per sheet")
     ap.add_argument("--zoom", type=float, default=None, help="override PrepCfg.zoom")
-    ap.add_argument("--rid", type=str, default=None, help="restrict to one request id")
+    ap.add_argument("--rid", type=str, nargs="*", default=None,
+                    help="restrict to one or more request ids (skips --limit-rids)")
     ap.add_argument("--out", type=str, default=None, help="override dataset dir")
     args = ap.parse_args()
 
@@ -274,18 +307,24 @@ def main() -> None:
 
     model = sm.get_model("fastsam").get_model()  # frozen ultralytics FastSAM (shared)
 
-    rids = [args.rid] if args.rid else wl.list_requests()
+    rids = _resolve_rids(args.rid, args.limit_rids, cfg.seed)
+    print(f"[prep] rids={len(rids)} limit_rids={args.limit_rids} "
+          f"sheets_per_rid={args.sheets_per_rid} limit_sheets={args.limit_sheets} seed={cfg.seed}")
+
     rows: list[dict] = []
     n_sheets = 0
     t0 = time.time()
 
     for rid in rids:
+        if args.limit_sheets and n_sheets >= args.limit_sheets:
+            break
         try:
             wsheets = [w for w in wl.list_worksheets(rid)
                        if w["has_geometry"] and w["width"] and w["height"]]
         except Exception as exc:
             print(f"[prep] skip rid {rid[:8]}: {exc}")
             continue
+        wsheets = _sample_sheets(wsheets, args.sheets_per_rid, cfg.seed, rid)
         for w in wsheets:
             if args.limit_sheets and n_sheets >= args.limit_sheets:
                 break
@@ -303,8 +342,6 @@ def main() -> None:
             print(f"[prep] sheet {n_sheets} {rid[:8]}/{wid[:8]} pts={st['pts']} gt={st['gt']} "
                   f"pos={st['pos']} neg={st['neg']} total={len(rows)} "
                   f"peakRSS={_peak_mb():.0f}MB t={time.time()-t0:.0f}s")
-        if args.limit_sheets and n_sheets >= args.limit_sheets:
-            break
 
     if not rows:
         print("[prep] no candidates produced — check that the chosen sheets have electrical points")

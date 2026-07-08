@@ -4,12 +4,18 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Symbol Matcher</title>
-  <link rel="stylesheet" href="/static/style.css?v=18" />
+  <link rel="stylesheet" href="/static/style.css?v=21" />
 </head>
 <body>
   <header>
     <h1>Symbol Matcher</h1>
     <p class="subtitle">Pick a request &amp; worksheet, drag a box around a symbol, and highlight every similar patch.</p>
+    <label class="mode-select">Mode
+      <select id="mode-select">
+        <option value="/" selected>Detect boxes</option>
+        <option value="/quill">Visual Quill</option>
+      </select>
+    </label>
   </header>
 
   <!-- Row 1: pick the data -->
@@ -61,9 +67,9 @@
     <div class="group">
       <span class="group-label">SAM boxes</span>
       <div class="group-row">
-        <button id="sam-btn" disabled title="Segment symbols with FastSAM using the worksheet reference points">FastSAM</button>
+        <button id="sam-btn" disabled title="Segment symbols with FastSAM-S using the worksheet reference points">FastSAM-S</button>
+        <button id="fastsamx-btn" disabled title="Segment symbols with FastSAM-X (larger backbone) for comparison">FastSAM-X</button>
         <button id="hqsam-btn" disabled title="Segment symbols with HQ-SAM (crisper on thin symbols, negative-prompted for dense areas)">HQ-SAM</button>
-        <button id="mix-btn" disabled title="Mix: run FastSAM + HQ-SAM per point and keep the tighter box where they overlap; keep either box where only one model found it">Mix (HQ+Fast)</button>
         <label id="tiling-field" title="Tiling chunks the sheet into overlapping tiles for bounded memory only; the same per-point detection runs inside each tile. Off = whole sheet in one pass.">
           Tiling
           <select id="tile-select" disabled>
@@ -95,8 +101,20 @@
             <option value="suppressed">Line-suppressed</option>
           </select>
         </label>
+        <label class="check" id="tile-grid-field" title="Overlay the SAM tiling grid (orange rectangles) on the worksheet. Uses the Tiling size above and the same overlap as the detector.">
+          <input type="checkbox" id="show-tile-grid" disabled /> Show tile grid
+        </label>
+        <label id="tile-highlight-field" title="Highlight one tile in red (like the notebook walkthrough tile).">
+          Highlight tile
+          <select id="tile-highlight" disabled>
+            <option value="-1">All</option>
+          </select>
+        </label>
         <label class="check" id="postproc-field" title="Post-process each SAM mask like symbol_det: intersect with the binarized ink and drop masks that are too small / sparse / line-like. Tightens boxes to the actual glyph strokes.">
           <input type="checkbox" id="postproc" checked disabled /> Post-process masks (symbol_det)
+        </label>
+        <label class="check" id="hull-field" title="Box each symbol with the minimum-area rotated rectangle fitted to its SAM mask (a 4-corner box derived from the mask's convex hull) instead of an upright axis-aligned rectangle — so rotated / diagonal symbols aren't boxed with loose empty corners.">
+          <input type="checkbox" id="hull" disabled /> Convex-hull boxes (rotated)
         </label>
       </div>
     </div>
@@ -107,9 +125,9 @@
         <label>
           Model
           <select id="eval-model" disabled>
-            <option value="fastsam">FastSAM</option>
+            <option value="fastsam">FastSAM-S</option>
+            <option value="fastsamx">FastSAM-X</option>
             <option value="hqsam">HQ-SAM</option>
-            <option value="mix">Mix (HQ+Fast)</option>
           </select>
         </label>
         <label title="Ground truth source: BBoxes = prompt at GT box centers, score by IoU. Points = prompt at GT reference points, score by center-hit.">
@@ -126,6 +144,24 @@
         <button id="eval-btn" disabled title="Prompt the model at each GT box center and score its boxes against the wiring GT polygons by IoU — using the same detection config as the interactive Segment buttons">Evaluate</button>
       </div>
       <div id="eval-metrics" class="metrics" hidden></div>
+    </div>
+
+    <div class="group">
+      <span class="group-label">Mask scan</span>
+      <div class="group-row">
+        <label title="Frozen FastSAM segment-everything across the whole sheet (uses the preprocessing filter above)">
+          Model
+          <select id="mask-model-select" disabled>
+            <option value="fastsam">FastSAM-S</option>
+            <option value="fastsamx">FastSAM-X</option>
+          </select>
+        </label>
+        <label class="threshold" title="Only draw masks at or above this confidence (FastSAM objectness, or head score when trained)">
+          Min conf <span id="mask-min-val">0.25</span>
+          <input id="mask-min-score" type="range" min="0" max="0.95" step="0.05" value="0.25" disabled />
+        </label>
+        <button id="mask-scan-btn" disabled title="Run segment-everything on the current processing view and overlay all masks">Run mask scan</button>
+      </div>
     </div>
 
     <div class="group">
@@ -181,10 +217,11 @@
     <label><input type="checkbox" data-layer="points" checked /><span class="swatch cross" style="color:#ff1744"></span>Points (GT) <span class="cnt" id="cnt-points">0</span></label>
     <label><input type="checkbox" data-layer="patches" checked /><span class="swatch" style="background:#76ff03"></span>Patches (GT) <span class="cnt" id="cnt-patches">0</span></label>
     <label><input type="checkbox" data-layer="matches" checked /><span class="swatch multi"></span>Matches <span class="cnt" id="cnt-matches">0</span></label>
-    <label><input type="checkbox" data-layer="fastsam" checked /><span class="swatch" style="background:#00e5ff"></span>FastSAM <span class="cnt" id="cnt-fastsam">0</span></label>
+    <label><input type="checkbox" data-layer="fastsam" checked /><span class="swatch" style="background:#00e5ff"></span>FastSAM-S <span class="cnt" id="cnt-fastsam">0</span></label>
+    <label><input type="checkbox" data-layer="fastsamx" checked /><span class="swatch" style="background:#ff9100"></span>FastSAM-X <span class="cnt" id="cnt-fastsamx">0</span></label>
     <label><input type="checkbox" data-layer="hqsam" checked /><span class="swatch" style="background:#ff3df0"></span>HQ-SAM <span class="cnt" id="cnt-hqsam">0</span></label>
-    <label><input type="checkbox" data-layer="mix" checked /><span class="swatch" style="background:#b388ff"></span>Mix <span class="cnt" id="cnt-mix">0</span></label>
-    <label title="Ink-intersected SAM masks (symbol_det post-processing) for the current SAM model, drawn as a translucent overlay."><input type="checkbox" data-layer="masks" /><span class="swatch" style="background:#ff00ff"></span>Masks (ink) <span class="cnt" id="cnt-masks">0</span></label>
+    <label title="Ink-intersected SAM masks (symbol_det post-processing) for the current SAM model, drawn as a translucent overlay."><input type="checkbox" data-layer="masks" /><span class="swatch multi"></span>Masks (ink) <span class="cnt" id="cnt-masks">0</span></label>
+    <label title="Whole-sheet segment-everything masks from the mask scan (FastSAM / FastSAM-X)."><input type="checkbox" data-layer="segment" /><span class="swatch multi"></span>Segment masks <span class="cnt" id="cnt-segment">0</span></label>
     <label><input type="checkbox" data-layer="eval-tp" checked /><span class="swatch" style="background:#00e676"></span>Eval TP <span class="cnt" id="cnt-eval-tp">0</span></label>
     <label><input type="checkbox" data-layer="eval-fp" checked /><span class="swatch" style="background:#ff5252"></span>Eval FP <span class="cnt" id="cnt-eval-fp">0</span></label>
     <label><input type="checkbox" data-layer="eval-missed" checked /><span class="swatch cross" style="color:#ffd600"></span>Missed GT <span class="cnt" id="cnt-eval-missed">0</span></label>
@@ -208,9 +245,9 @@
       <label>
         Models
         <span class="chan-inputs">
-          <label class="check"><input type="checkbox" class="an-model" value="fastsam" checked /> FastSAM</label>
+          <label class="check"><input type="checkbox" class="an-model" value="fastsam" checked /> FastSAM-S</label>
+          <label class="check"><input type="checkbox" class="an-model" value="fastsamx" /> FastSAM-X</label>
           <label class="check"><input type="checkbox" class="an-model" value="hqsam" checked /> HQ-SAM</label>
-          <label class="check"><input type="checkbox" class="an-model" value="mix" /> Mix (HQ+Fast)</label>
         </span>
       </label>
       <label title="Ground truth source(s): BBoxes = IoU vs polygon patches. Points = center-hit vs reference points. Tick both to compare.">
@@ -272,6 +309,6 @@
     <div id="an-results" class="an-results"></div>
   </section>
 
-  <script src="/static/app.js?v=18"></script>
+  <script src="/static/app.js?v=23"></script>
 </body>
 </html>
