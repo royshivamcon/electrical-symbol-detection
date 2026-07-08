@@ -27,6 +27,15 @@ annotated **reference points** (the `geometry_type == 1` Point features from
   the same adaptive-crop + neighbour-negative recipe. This is the SAM-family
   model that runs on Apple **MPS**, so it's the Mac-friendly stand-in for SAM 3.
   Heaviest of the three (re-encodes each crop) but a useful cross-check.
+- **CCL boxes** (coral, `model=ccl`): a **model-free** connected-component
+  tight-box finder — no weights, no GPU, thousands of points/sec. Per point it
+  binarizes a crop, **cuts the connecting wires** (long-line morphological
+  opening) so the symbol detaches, labels the components, keeps only the compact
+  glyph ones, and returns the ink's own bounding box. Prompted at GT centers it's
+  the **tightest** option (mean IoU ≈ 0.87, above the SAM ~0.72 plateau); free
+  reference-point coverage is a bit lower since symbols fused to a wire are
+  removed with it. Great as a tightness baseline and a weight-free fallback.
+  Ignores the filter / tiling / zoom controls.
 
 Both share a connected-component fallback and `min_symbol_px`/`max_symbol_px`
 size clamps. MobileSAM is still available via `?model=mobilesam`. The worksheet
@@ -86,6 +95,7 @@ symbol_matcher_app/
   fastsam_boxes.py     FastSAM crop-wise box-finding (default SAM mode)
   hqsam_boxes.py       Light HQ-SAM crop-wise box-finding (model=hqsam)
   sam2_boxes.py        SAM 2.1 crop-wise box-finding, Mac-friendly (model=sam2)
+  ccl_boxes.py         model-free connected-component tight boxes (model=ccl)
   pseudocolor.py       glow pseudo-coloring + unsharp-mask sharpening for SAM input
   static/              index.html, app.js, style.css  (drag-select UI)
   requirements.txt
@@ -118,6 +128,6 @@ Open http://127.0.0.1:8000/
 | GET | `/api/worksheet/{rid}/{wid}/image` | Worksheet PNG |
 | GET | `/api/worksheet/{rid}/{wid}/meta` | `{width, height}` of the raster |
 | POST | `/api/worksheet/{rid}/{wid}/match` | Body `{x,y,w,h,threshold,scales?}` → matching boxes |
-| GET | `/api/worksheet/{rid}/{wid}/sam_points?limit=N&model=fastsam&pseudocolor=0&sharpen=0` | SAM boxes from reference points (`model`=fastsam\|hqsam\|sam2\|mobilesam, `limit` caps points, `pseudocolor=1` glow- and/or `sharpen=1` unsharp-preprocesses the SAM input) |
+| GET | `/api/worksheet/{rid}/{wid}/sam_points?limit=N&model=fastsam` | Boxes from reference points (`model`=fastsam\|hqsam\|sam2\|mix\|ccl\|mobilesam, `limit` caps points; see PIPELINE.md for the full param set) |
 
 Coordinates in `/match` are in **original image pixels**.

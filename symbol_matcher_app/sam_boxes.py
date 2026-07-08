@@ -1,60 +1,24 @@
-"""MobileSAM box finding from worksheet reference points.
+"""Worksheet reference points + ground-truth polygons (electrical filtering).
 
 The worksheet ``*_geometries.json`` files contain annotated **point** features
-(the symbol reference points). We apply the same "electrical" filtering used in
-the EDA notebooks — keep ``feature.geometry_type == 1`` (Point) outputs — map
-each point from Feathers coordinates to image pixels, then prompt MobileSAM with
-those points to segment each symbol and return its bounding box.
+(the symbol reference points) and **polygon** features (ground-truth patches). We
+apply the same "electrical" filtering used in the EDA notebooks — keep
+``feature.geometry_type == 1`` (Point) / ``== 3`` (Polygon) outputs — and map each
+from Feathers coordinates to image pixels. ``RefPoint`` is the shared prompt type
+consumed by the ``boxes_from_points`` / ``seg_models`` pipeline.
 """
 
 from __future__ import annotations
 
 import json
-import threading
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
-
-import cv2
-import numpy as np
 
 import worksheet_loader as wl
 
 APP_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = APP_DIR.parent
-CHECKPOINT = PROJECT_ROOT / "models" / "mobile_sam.pt"
-
-_PREDICTOR = None
-_PREDICTOR_LOCK = threading.Lock()
-
-
-# --- model -----------------------------------------------------------------
-def _device() -> str:
-    import torch
-
-    if torch.backends.mps.is_available():
-        return "mps"
-    if torch.cuda.is_available():
-        return "cuda"
-    return "cpu"
-
-
-def get_predictor():
-    """Lazily build a single shared MobileSAM predictor."""
-    global _PREDICTOR
-    if _PREDICTOR is not None:
-        return _PREDICTOR
-    with _PREDICTOR_LOCK:
-        if _PREDICTOR is None:
-            from mobile_sam import SamPredictor, sam_model_registry
-
-            if not CHECKPOINT.exists():
-                raise FileNotFoundError(f"MobileSAM checkpoint not found: {CHECKPOINT}")
-            sam = sam_model_registry["vit_t"](checkpoint=str(CHECKPOINT))
-            sam.to(_device())
-            sam.eval()
-            _PREDICTOR = SamPredictor(sam)
-    return _PREDICTOR
 
 
 # --- reference points (electrical filtering) -------------------------------
@@ -185,15 +149,28 @@ def _tag_maps(rid: str) -> tuple[dict, dict]:
     return tagid_to_name, typeid_to_name
 
 
-def _poly_tag_str(rid: str, tags_info: dict) -> str:
-    """Resolve a polygon's ``tags_info`` to the EDA ``category + source`` string."""
+def _resolve_poly_tags(rid: str, tags_info: dict) -> dict[str, str]:
+    """Resolve a polygon's ``tags_info`` (type_id -> {tagId}) to a name->value map,
+    e.g. ``{"category": "OUTLETS", "source": "LEGEND"}``."""
     tagid_to_name, typeid_to_name = _tag_maps(rid)
     resolved: dict[str, str] = {}
     for type_id, v in (tags_info or {}).items():
         tname = typeid_to_name.get(type_id)
         if tname:
             resolved[tname] = tagid_to_name.get((v or {}).get("tagId")) or ""
-    return (resolved.get("category") or "") + (resolved.get("source") or "")
+    return resolved
+
+
+def _poly_keep(rid: str, tags_info: dict) -> bool:
+    """Polygon "true patch" filter: **keep only wiring-device polygons**.
+
+    Resolve the polygon's tags and keep it only when its ``category`` is
+    ``WIRING_DEVICES`` (wiring); every other category (lighting, panels,
+    fire_alarm, security, …) is dropped.
+    """
+    resolved = _resolve_poly_tags(rid, tags_info)
+    category = (resolved.get("category") or "").lower()
+    return "wiring" in category
 
 
 def load_reference_polygons(
@@ -202,10 +179,9 @@ def load_reference_polygons(
     """Load Polygon features (geometry_type == 3) as ground-truth bounding-box
     "true patches", mapped to ``img_w x img_h`` pixels.
 
-    When ``electrical`` is True (default) this mirrors the EDA notebook: keep only
-    polygons whose resolved ``category + source`` tag string passes the electrical
-    keyword filter (drops ``ROI`` and non-electrical categories). When False, every
-    polygon is kept. Each polygon's outer ring is reduced to a bbox.
+    When ``electrical`` is True (default) only wiring-device polygons are kept
+    (see ``_poly_keep``). When False, all polygons are kept. Each polygon's outer
+    ring is reduced to a bbox.
     """
     gp = _geometry_path(rid, wid)
     if not gp.exists():
@@ -224,7 +200,7 @@ def load_reference_polygons(
         for f in out.get("output_geojson", {}).get("features", []):
             if electrical:
                 tags_info = (f.get("properties", {}) or {}).get("tags_info", {})
-                if not _is_electrical(_poly_tag_str(rid, tags_info)):
+                if not _poly_keep(rid, tags_info):
                     continue
             ring = (f.get("geometry", {}) or {}).get("coordinates", [])
             if not ring or not isinstance(ring[0], (list, tuple)):
@@ -242,60 +218,33 @@ def load_reference_polygons(
     return polys
 
 
-# --- segmentation ----------------------------------------------------------
-@dataclass
-class SamBox:
-    x: int
-    y: int
-    w: int
-    h: int
-    score: float
-    name: str
+@lru_cache(maxsize=1024)
+def worksheet_has_patches(rid: str, wid: str, electrical: bool = True) -> bool:
+    """True if the worksheet has at least one polygon "true patch".
 
-    def as_dict(self) -> dict:
-        return {
-            "x": self.x, "y": self.y, "w": self.w, "h": self.h,
-            "score": round(self.score, 4), "name": self.name,
-        }
-
-
-def boxes_from_points(
-    image_bgr: np.ndarray,
-    points: list[RefPoint],
-    max_box_frac: float = 0.04,
-    min_box_px: int = 6,
-) -> list[SamBox]:
-    """Prompt MobileSAM with each reference point and return symbol boxes.
-
-    ``max_box_frac`` drops masks whose box covers more than this fraction of the
-    image area (a guard against the mask leaking into the background).
+    Cheap existence check used to filter the worksheet list: scans the geometries
+    file for a ``geometry_type == 3`` feature and returns on the first one that
+    passes ``_poly_keep`` (or any valid polygon when ``electrical`` is False). No
+    pixel mapping is done.
     """
-    if not points:
-        return []
-    predictor = get_predictor()
-    image_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
-    H, W = image_rgb.shape[:2]
-    img_area = float(H * W)
-    predictor.set_image(image_rgb)
-
-    out: list[SamBox] = []
-    labels = np.array([1])
-    for p in points:
-        masks, scores, _ = predictor.predict(
-            point_coords=np.array([[p.x, p.y]]),
-            point_labels=labels,
-            multimask_output=True,
-        )
-        best = int(np.argmax(scores))
-        mask = masks[best]
-        ys, xs = np.where(mask)
-        if xs.size == 0:
+    gp = _geometry_path(rid, wid)
+    if not gp.exists():
+        return False
+    try:
+        data = json.load(open(gp))
+    except (json.JSONDecodeError, OSError):
+        return False
+    for out in data.get("outputs", []):
+        feat = out.get("feature", {}) or {}
+        if feat.get("geometry_type") != 3:  # 3 == Polygon
             continue
-        x1, y1, x2, y2 = int(xs.min()), int(ys.min()), int(xs.max()), int(ys.max())
-        bw, bh = x2 - x1 + 1, y2 - y1 + 1
-        if bw < min_box_px or bh < min_box_px:
-            continue
-        if (bw * bh) / img_area > max_box_frac:
-            continue
-        out.append(SamBox(x1, y1, bw, bh, float(scores[best]), p.name))
-    return out
+        for f in out.get("output_geojson", {}).get("features", []):
+            if not electrical:
+                ring = (f.get("geometry", {}) or {}).get("coordinates", [])
+                if ring and isinstance(ring[0], (list, tuple)):
+                    return True
+                continue
+            tags_info = (f.get("properties", {}) or {}).get("tags_info", {})
+            if _poly_keep(rid, tags_info):
+                return True
+    return False

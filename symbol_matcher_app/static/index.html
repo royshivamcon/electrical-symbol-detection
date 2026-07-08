@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Symbol Matcher</title>
-  <link rel="stylesheet" href="/static/style.css" />
+  <link rel="stylesheet" href="/static/style.css?v=18" />
 </head>
 <body>
   <header>
@@ -12,34 +12,159 @@
     <p class="subtitle">Pick a request &amp; worksheet, drag a box around a symbol, and highlight every similar patch.</p>
   </header>
 
+  <!-- Row 1: pick the data -->
   <section class="controls">
-    <label>
-      Request (rid)
-      <select id="rid-select"><option value="">Loading…</option></select>
-    </label>
-    <label>
-      Worksheet (wid)
-      <input id="wid-input" list="wid-list" disabled autocomplete="off"
-             placeholder="select or search wid…" />
-      <datalist id="wid-list"></datalist>
-    </label>
-    <button id="load-btn" disabled>Load worksheet</button>
+    <div class="group">
+      <span class="group-label">Worksheet</span>
+      <div class="group-row">
+        <label>
+          Request (rid)
+          <select id="rid-select"><option value="">Loading…</option></select>
+        </label>
+        <label>
+          Worksheet (wid)
+          <input id="wid-input" list="wid-list" disabled autocomplete="off"
+                 placeholder="select or search wid…" />
+          <datalist id="wid-list"></datalist>
+        </label>
+        <label class="check" title="Only list worksheets that have ground-truth polygon patches after the wiring filter">
+          <input type="checkbox" id="patches-only" /> Only sheets with patches
+        </label>
+        <button id="load-btn" disabled>Load worksheet</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- Row 2: matching + SAM tools -->
+  <section class="controls tools" id="tools" hidden>
+    <div class="group">
+      <span class="group-label">Template match</span>
+      <div class="group-row">
+        <label title="Classical = OpenCV normalized cross-correlation on pixels. TMR / PerSAM = training-free matching on the frozen HQ-SAM backbone (dense features), boxes refined by the SAM decoder; scale-agnostic so differently sized instances are still found (slower, encodes the sheet). SAM 3 = promptable concept segmentation: the selection is a visual exemplar and SAM 3 returns every matching instance in one pass (whole-sheet, needs models/sam3.pt; its threshold is a detector confidence, so use the slider's low end).">
+          Method
+          <select id="match-method" disabled>
+            <option value="classical">Classical (NCC)</option>
+            <option value="tmr">TMR · SAM features</option>
+            <option value="persam">PerSAM · one-shot</option>
+            <option value="sam3">SAM 3 · concept seg</option>
+          </select>
+        </label>
+        <label class="threshold">
+          Threshold <span id="thr-val">0.70</span>
+          <input id="thr-slider" type="range" min="0.30" max="0.98" step="0.01" value="0.70" />
+        </label>
+        <button id="select-btn" disabled>Select symbol</button>
+        <button id="rematch-btn" disabled>Re-match</button>
+      </div>
+    </div>
+
+    <div class="group">
+      <span class="group-label">SAM boxes</span>
+      <div class="group-row">
+        <button id="sam-btn" disabled title="Segment symbols with FastSAM using the worksheet reference points">FastSAM</button>
+        <button id="hqsam-btn" disabled title="Segment symbols with HQ-SAM (crisper on thin symbols, negative-prompted for dense areas)">HQ-SAM</button>
+        <button id="mix-btn" disabled title="Mix: run FastSAM + HQ-SAM per point and keep the tighter box where they overlap; keep either box where only one model found it">Mix (HQ+Fast)</button>
+        <label id="tiling-field" title="Tiling chunks the sheet into overlapping tiles for bounded memory only; the same per-point detection runs inside each tile. Off = whole sheet in one pass.">
+          Tiling
+          <select id="tile-select" disabled>
+            <option value="0">Off (crop per point)</option>
+            <option value="512">512 px tiles</option>
+            <option value="640">640 px tiles</option>
+            <option value="768">768 px tiles</option>
+            <option value="1024" selected>1024 px tiles</option>
+          </select>
+        </label>
+        <label id="zoom-proc-field" title="Render zoom (quill_forge / fitz): re-render the source PDF at this factor for sharper lines fed to the model, then map boxes back to the base image. Higher = crisper but slower / more memory.">
+          Render zoom
+          <select id="zoom-proc-select" disabled>
+            <option value="1">1× (image_url)</option>
+            <option value="2">2× (PDF)</option>
+            <option value="3">3× (PDF)</option>
+            <option value="4" selected>4× (PDF)</option>
+            <option value="5">5× (PDF)</option>
+          </select>
+        </label>
+        <label class="check" id="remove-text-field" title="Render from the source PDF with all text (labels/dimensions) redacted out — line art and images kept — so text doesn't distract the detector. Forces the PDF render path even at 1×.">
+          <input type="checkbox" id="remove-text" checked disabled /> Remove text
+        </label>
+        <label id="proc-view-field" title="Swap the background between the original raster and symbol_det's processed views: Binary (ink binarization) or Line-suppressed (long straight lines removed). Coordinates are unchanged so all overlays stay aligned.">
+          Processing view
+          <select id="proc-view-select" disabled>
+            <option value="original">Original</option>
+            <option value="binary">Binary (ink)</option>
+            <option value="suppressed">Line-suppressed</option>
+          </select>
+        </label>
+        <label class="check" id="postproc-field" title="Post-process each SAM mask like symbol_det: intersect with the binarized ink and drop masks that are too small / sparse / line-like. Tightens boxes to the actual glyph strokes.">
+          <input type="checkbox" id="postproc" checked disabled /> Post-process masks (symbol_det)
+        </label>
+      </div>
+    </div>
+
+    <div class="group">
+      <span class="group-label">Evaluate vs GT patches</span>
+      <div class="group-row">
+        <label>
+          Model
+          <select id="eval-model" disabled>
+            <option value="fastsam">FastSAM</option>
+            <option value="hqsam">HQ-SAM</option>
+            <option value="mix">Mix (HQ+Fast)</option>
+          </select>
+        </label>
+        <label title="Ground truth source: BBoxes = prompt at GT box centers, score by IoU. Points = prompt at GT reference points, score by center-hit.">
+          GT
+          <select id="eval-gt" disabled>
+            <option value="bboxes">BBoxes · IoU</option>
+            <option value="points">Points · center</option>
+          </select>
+        </label>
+        <label class="threshold">
+          IoU <span id="eval-iou-val">0.50</span>
+          <input id="eval-iou" type="range" min="0.10" max="0.90" step="0.05" value="0.50" disabled />
+        </label>
+        <button id="eval-btn" disabled title="Prompt the model at each GT box center and score its boxes against the wiring GT polygons by IoU — using the same detection config as the interactive Segment buttons">Evaluate</button>
+      </div>
+      <div id="eval-metrics" class="metrics" hidden></div>
+    </div>
+
+    <div class="group">
+      <span class="group-label">SAM preprocessing filter</span>
+      <div class="group-row">
+        <label>
+          Filter
+          <select id="filter-select" disabled>
+            <option value="none">None</option>
+            <option value="gaussian">Gaussian blur</option>
+            <option value="laplace">Gaussian&ndash;Laplace</option>
+            <option value="channels">Channels (pseudo-color)</option>
+            <option value="sharpen">Sharpen</option>
+            <option value="median">Median blur</option>
+            <option value="bilateral">Bilateral</option>
+            <option value="canny">Canny edges</option>
+            <option value="clahe">CLAHE (contrast)</option>
+            <option value="threshold">Adaptive threshold</option>
+            <option value="invert">Invert</option>
+          </select>
+        </label>
+        <label id="ksize-field" hidden title="Kernel size for Gaussian / Laplace / Sharpen">
+          Kernel
+          <input id="ksize" type="number" min="1" max="99" step="2" value="5" disabled />
+        </label>
+        <label id="channels-field" hidden title="Per-channel Gaussian kernels: R (sharp) / G (mid) / B (wide glow)">
+          Channels R / G / B
+          <span class="chan-inputs">
+            <input id="kr" type="number" min="1" max="99" value="6" disabled />
+            <input id="kg" type="number" min="1" max="99" value="8" disabled />
+            <input id="kb" type="number" min="1" max="99" value="3" disabled />
+          </span>
+        </label>
+      </div>
+    </div>
 
     <div class="spacer"></div>
 
-    <label class="threshold">
-      Threshold <span id="thr-val">0.70</span>
-      <input id="thr-slider" type="range" min="0.30" max="0.98" step="0.01" value="0.70" />
-    </label>
-    <button id="select-btn" disabled>Select symbol</button>
-    <button id="sam-btn" disabled title="Segment symbols with FastSAM using the worksheet reference points">FastSAM boxes</button>
-    <button id="hqsam-btn" disabled title="Segment symbols with HQ-SAM (crisper on thin symbols, negative-prompted for dense areas)">HQ-SAM boxes</button>
-    <button id="sam2-btn" disabled title="Segment symbols with SAM 2.1 (Mac-friendly SAM-family model, runs on Apple MPS)">SAM2.1 boxes</button>
-    <label title="Glow pseudo-coloring preproc: feeds SAM a chromatic-gradient image so thin monochrome lines read like natural depth/lighting"><input type="checkbox" id="pc-toggle" disabled /> Pseudo-color</label>
-    <label title="Sharpen preproc: unsharp-masks the crop fed to SAM (a little aggressive) so razor-thin strokes pop"><input type="checkbox" id="sharpen-toggle" disabled /> Sharpen</label>
-    <button id="rematch-btn" disabled>Re-match</button>
     <button id="clear-btn" disabled>Clear</button>
-
     <div class="zoom-group" id="zoom-group" hidden>
       <button id="zoom-out" title="Zoom out">&minus;</button>
       <span id="zoom-val">100%</span>
@@ -58,12 +183,17 @@
     <label><input type="checkbox" data-layer="matches" checked /><span class="swatch multi"></span>Matches <span class="cnt" id="cnt-matches">0</span></label>
     <label><input type="checkbox" data-layer="fastsam" checked /><span class="swatch" style="background:#00e5ff"></span>FastSAM <span class="cnt" id="cnt-fastsam">0</span></label>
     <label><input type="checkbox" data-layer="hqsam" checked /><span class="swatch" style="background:#ff3df0"></span>HQ-SAM <span class="cnt" id="cnt-hqsam">0</span></label>
-    <label><input type="checkbox" data-layer="sam2" checked /><span class="swatch" style="background:#ffb300"></span>SAM 2.1 <span class="cnt" id="cnt-sam2">0</span></label>
+    <label><input type="checkbox" data-layer="mix" checked /><span class="swatch" style="background:#b388ff"></span>Mix <span class="cnt" id="cnt-mix">0</span></label>
+    <label title="Ink-intersected SAM masks (symbol_det post-processing) for the current SAM model, drawn as a translucent overlay."><input type="checkbox" data-layer="masks" /><span class="swatch" style="background:#ff00ff"></span>Masks (ink) <span class="cnt" id="cnt-masks">0</span></label>
+    <label><input type="checkbox" data-layer="eval-tp" checked /><span class="swatch" style="background:#00e676"></span>Eval TP <span class="cnt" id="cnt-eval-tp">0</span></label>
+    <label><input type="checkbox" data-layer="eval-fp" checked /><span class="swatch" style="background:#ff5252"></span>Eval FP <span class="cnt" id="cnt-eval-fp">0</span></label>
+    <label><input type="checkbox" data-layer="eval-missed" checked /><span class="swatch cross" style="color:#ffd600"></span>Missed GT <span class="cnt" id="cnt-eval-missed">0</span></label>
   </div>
 
   <section class="stage-wrap" id="stage-wrap">
     <div id="stage" class="stage">
       <img id="worksheet-img" alt="" />
+      <img id="mask-layer" alt="" hidden />
       <svg id="overlay" xmlns="http://www.w3.org/2000/svg"></svg>
     </div>
   </section>
@@ -72,6 +202,76 @@
     <span id="hint">Drag to pan &middot; scroll to zoom &middot; click <b>Select symbol</b> then drag a box. Repeat to add more symbols — each gets its own color. Use <b>Layers</b> to show/hide each model.</span>
   </footer>
 
-  <script src="/static/app.js"></script>
+  <section class="analysis" id="analysis">
+    <h2>Analysis &mdash; aggregate over a request</h2>
+    <div class="group-row">
+      <label>
+        Models
+        <span class="chan-inputs">
+          <label class="check"><input type="checkbox" class="an-model" value="fastsam" checked /> FastSAM</label>
+          <label class="check"><input type="checkbox" class="an-model" value="hqsam" checked /> HQ-SAM</label>
+          <label class="check"><input type="checkbox" class="an-model" value="mix" /> Mix (HQ+Fast)</label>
+        </span>
+      </label>
+      <label title="Ground truth source(s): BBoxes = IoU vs polygon patches. Points = center-hit vs reference points. Tick both to compare.">
+        GT
+        <span class="chan-inputs">
+          <label class="check"><input type="checkbox" class="an-gt" value="bboxes" checked /> BBoxes · IoU</label>
+          <label class="check"><input type="checkbox" class="an-gt" value="points" /> Points · center</label>
+        </span>
+      </label>
+      <label title="Preprocessing filter(s) fed to the models. Tick several to compare them in one run. Kernel sizes come from the SAM preprocessing filter group.">
+        Filters (tick any)
+        <span class="check-grid">
+          <label class="check"><input type="checkbox" class="an-filter" value="none" checked /> None</label>
+          <label class="check"><input type="checkbox" class="an-filter" value="gaussian" /> Gaussian</label>
+          <label class="check"><input type="checkbox" class="an-filter" value="laplace" /> Laplace</label>
+          <label class="check"><input type="checkbox" class="an-filter" value="channels" /> Channels</label>
+          <label class="check"><input type="checkbox" class="an-filter" value="sharpen" /> Sharpen</label>
+          <label class="check"><input type="checkbox" class="an-filter" value="median" /> Median</label>
+          <label class="check"><input type="checkbox" class="an-filter" value="bilateral" /> Bilateral</label>
+          <label class="check"><input type="checkbox" class="an-filter" value="canny" /> Canny</label>
+          <label class="check"><input type="checkbox" class="an-filter" value="clahe" /> CLAHE</label>
+          <label class="check"><input type="checkbox" class="an-filter" value="threshold" /> Threshold</label>
+          <label class="check"><input type="checkbox" class="an-filter" value="invert" /> Invert</label>
+        </span>
+      </label>
+      <label class="threshold">
+        IoU <span id="an-iou-val">0.50</span>
+        <input id="an-iou" type="range" min="0.10" max="0.90" step="0.05" value="0.50" />
+      </label>
+      <label title="How many patch-bearing sheets of the request to evaluate">
+        Max sheets
+        <input id="an-max" type="number" min="1" max="50" value="6" />
+      </label>
+      <label title="Tiling for the analysis run (FastSAM / HQ-SAM)">
+        Tiling
+        <select id="an-tile">
+          <option value="0">Off</option>
+          <option value="512">512</option>
+          <option value="640">640</option>
+          <option value="768">768</option>
+          <option value="1024">1024</option>
+        </select>
+      </label>
+      <label title="Render zoom (quill_forge / fitz PDF render) applied to every sheet in the sweep">
+        Render zoom
+        <select id="an-zoom">
+          <option value="1">1×</option>
+          <option value="2">2×</option>
+          <option value="3">3×</option>
+          <option value="4">4×</option>
+          <option value="5">5×</option>
+        </select>
+      </label>
+      <label class="check" title="Render sheets from the source PDF with text redacted out (line art kept) before evaluating">
+        <input type="checkbox" id="an-remove-text" /> Remove text
+      </label>
+      <button id="an-run">Run analysis</button>
+    </div>
+    <div id="an-results" class="an-results"></div>
+  </section>
+
+  <script src="/static/app.js?v=18"></script>
 </body>
 </html>

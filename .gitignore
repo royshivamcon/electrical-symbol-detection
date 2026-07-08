@@ -7,25 +7,55 @@ config.yaml
 __pycache__/
 *.py[cod]
 *.egg-info/
-.ipynb_checkpoints/
 
 # === Virtual environments ===
 .envs/
 .venv/
 venv/
 
-# === Large data & run artifacts (kept out of VCS) ===
-data/
-outputs/
-logs/
-apt-handoff/
+# === Notebooks (local experiments, not versioned) ===
+*.ipynb
+.ipynb_checkpoints/
 
-# === Model weights ===
+# === Images & media ===
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.webp
+*.bmp
+*.tif
+*.tiff
+*.pdf
+
+# === Binary arrays & model weights ===
+*.npy
+*.npz
 models/
 *.pt
 *.pth
 *.onnx
 *.ckpt
+FastSAM-s.pt
+
+# === Large data & run artifacts (kept out of VCS) ===
+data/
+outputs/
+logs/
+apt-handoff/
+runs/
+symbol_det_hqsam_out/
+symbol_det_steps_out/
+symbol_det_outputs/
+
+# === EDA artifacts ===
+eda/images/
+eda/plots/
+eda/archive/
+
+# === Table processing outputs ===
+table_processing/output_tables/
+table_processing/*.html
 
 # === Third-party / nested git clones ===
 srcs/
@@ -34,12 +64,6 @@ srcs/
 symbol_matcher_app/.image_cache/
 symbol_matcher_app/pseudocolor_preview_*.png
 symbol_matcher_app/zoom_*.png
-
-# === EDA heavy artifacts ===
-eda/archive/
-# Notebooks that exceed GitHub's 100 MB per-file limit
-eda/notebooks/in_context_transformer.ipynb
-eda/notebooks/electrical_symbol_clustering.ipynb
 
 # === OS / editor ===
 .DS_Store
