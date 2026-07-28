@@ -42,11 +42,15 @@ FastSAM-s.pt
 data/
 outputs/
 logs/
+*.log
 apt-handoff/
 runs/
+eval/
+viz/
 symbol_det_hqsam_out/
 symbol_det_steps_out/
 symbol_det_outputs/
+symbol_embed/best_*_checkpoint.txt
 
 # === EDA artifacts ===
 eda/images/

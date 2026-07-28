@@ -1,0 +1,11 @@
+# Top 10 RIDs by patch-sheet count (seed for multi-rid train pool)
+0ead8522-b3a9-4bd6-a430-dd0b4dbec6ad
+c9a5099a-37cb-4693-b6e0-a2b5592b50b2
+aaaf192e-0925-40a1-a19a-09efecd8b3b9
+1aaf9456-be5b-4bbf-a821-1c14b6551e7e
+8b9aa9a4-1df5-4b65-a9b5-b2f2bfe79e72
+fd904995-8db7-402b-84a4-3ce2898a374e
+061c9552-1984-4ed1-b325-20ca0940cc54
+49706e6c-006f-4c10-a031-e8abba39c4e6
+2ac0a1c0-5fc1-4aba-8887-327d417a41c0
+f54df269-e564-406e-be5a-fd36dc176193

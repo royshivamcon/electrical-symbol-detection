@@ -1,0 +1,3 @@
+# Held-out validation RIDs (strict RID split; must not appear in train)
+061c9552-1984-4ed1-b325-20ca0940cc54
+fd904995-8db7-402b-84a4-3ce2898a374e
