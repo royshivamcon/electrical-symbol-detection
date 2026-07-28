@@ -1,0 +1,4 @@
+# Locked 3-RID pool: quill_local RIDs with existing nonzero symbol_crops.
+0ead8522-b3a9-4bd6-a430-dd0b4dbec6ad
+061c9552-1984-4ed1-b325-20ca0940cc54
+8b9aa9a4-1df5-4b65-a9b5-b2f2bfe79e72

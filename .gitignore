@@ -1,0 +1,17 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+data/
+runs/
+logs/
+eval/
+viz/
+*.log
+*.pt
+*.pth
+*.ckpt
+*.npy
+*.npz
+best_*_checkpoint.txt
+.DS_Store
